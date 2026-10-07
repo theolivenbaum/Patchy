@@ -275,6 +275,59 @@ public sealed class ColorManagementTests
         AssertNear(Convert(Transform(SwopProfile(), 4), c, m, y, k), r, g, b);
     }
 
+    private static readonly IccTransformSettings Absolute = new(IccRenderingIntent.AbsoluteColorimetric, true);
+
+    [Theory]
+    [InlineData(0, 0, 0, 0, 225, 223, 216)]
+    [InlineData(0, 0, 0, 255, 47, 45, 44)]
+    [InlineData(0, 255, 255, 0, 207, 44, 45)]
+    [InlineData(110, 0, 250, 0, 140, 179, 59)]
+    [InlineData(255, 0, 0, 0, 0, 153, 203)]
+    [InlineData(64, 32, 200, 10, 168, 168, 80)]
+    public void Absolute_colorimetric_keeps_the_swop_paper_white(int c, int m, int y, int k, int r, int g, int b)
+    {
+        // lcms 2.19, INTENT_ABSOLUTE_COLORIMETRIC: A2B1 scaled by the media white over D50, no black point compensation.
+        var transform = Transform(SwopProfile(), 4, Absolute);
+
+        Assert.Equal(default, transform.BlackPoint);
+        AssertNear(Convert(transform, c, m, y, k), r, g, b);
+    }
+
+    private static IccBuilder WithAdobeColorants(IccBuilder builder) => builder
+        .Add("rXYZ", IccBuilder.Xyz(TestProfiles.AdobeRed[0], TestProfiles.AdobeRed[1], TestProfiles.AdobeRed[2]))
+        .Add("gXYZ", IccBuilder.Xyz(TestProfiles.AdobeGreen[0], TestProfiles.AdobeGreen[1], TestProfiles.AdobeGreen[2]))
+        .Add("bXYZ", IccBuilder.Xyz(TestProfiles.AdobeBlue[0], TestProfiles.AdobeBlue[1], TestProfiles.AdobeBlue[2]))
+        .Add("rTRC", IccBuilder.Gamma(563 / 256.0))
+        .Add("gTRC", IccBuilder.Gamma(563 / 256.0))
+        .Add("bTRC", IccBuilder.Gamma(563 / 256.0));
+
+    [Fact]
+    public void Absolute_colorimetric_scales_by_the_media_white_like_lcms()
+    {
+        // A paper-white gray output profile: lcms tints even the gray axis, through the planar tables too.
+        var gray = new IccBuilder { DeviceClass = "prtr", ColorSpace = "GRAY" }
+            .Add("desc", IccBuilder.Description("Test Paper Gray"))
+            .Add("wtpt", IccBuilder.Xyz(0.88, 0.9, 0.70))
+            .Add("kTRC", IccBuilder.Gamma(2.2))
+            .Build();
+        var absoluteGray = Transform(gray, 1, Absolute);
+        AssertNear(Convert(absoluteGray, 64), 60, 58, 57);
+        AssertNear(Convert(absoluteGray, 128), 127, 122, 119);
+        AssertNear(Convert(absoluteGray, 255), 250, 242, 236);
+        AssertNear(Convert(Transform(gray, 1), 128), 129, 129, 129);
+        var image = new PlanarImage(new PsdRect(0, 0, 1, 1));
+        Assert.True(absoluteGray.Apply([[128 / 255f]], 8, image));
+        AssertNear(((int)Math.Round(image.R[0] * 255), (int)Math.Round(image.G[0] * 255), (int)Math.Round(image.B[0] * 255)), 127, 122, 119);
+
+        // An input-class RGB profile uses its white; a v2 display profile counts as D50 (no change).
+        var input = WithAdobeColorants(new IccBuilder { DeviceClass = "scnr" }.Add("wtpt", IccBuilder.Xyz(0.9, 0.95, 0.75))).Build();
+        var display = WithAdobeColorants(new IccBuilder().Add("wtpt", IccBuilder.Xyz(0.9, 0.95, 0.75))).Build();
+        AssertNear(Convert(Transform(input, 3, Absolute), 255, 255, 255), 245, 251, 244);
+        AssertNear(Convert(Transform(input, 3, Absolute), 64, 128, 192), 0, 127, 187);
+        AssertNear(Convert(Transform(input, 3, Absolute), 128, 128, 128), 124, 127, 123);
+        AssertNear(Convert(Transform(display, 3, Absolute), 64, 128, 192), 0, 129, 196);
+    }
+
     [Fact]
     public void Swop_black_point_matches_lcms()
     {

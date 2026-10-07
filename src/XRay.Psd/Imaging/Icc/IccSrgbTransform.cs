@@ -46,6 +46,9 @@ internal sealed class IccSrgbTransform
     private readonly double[] _shaperOffset = new double[3];
     private readonly double[] _bpcScale = [1, 1, 1];
     private readonly object _gate = new();
+
+    // Absolute colorimetric with a media white other than D50 tints even a gray TRC.
+    private readonly bool _tintedGray;
     private Tables? _tables8;
     private Tables? _tables16;
     private Tables? _tables32;
@@ -104,6 +107,17 @@ internal sealed class IccSrgbTransform
         else
         {
             BlackPoint = default;
+        }
+
+        if (settings.Intent == IccRenderingIntent.AbsoluteColorimetric)
+        {
+            // Little CMS ComputeAbsoluteIntent with a fully adapted observer: scale the relative PCS by
+            // the source media white over the destination's (the built-in sRGB stores D50).
+            var white = MediaWhite(profile);
+            _bpcScale[0] *= white.X / IccPcs.D50.X;
+            _bpcScale[1] *= white.Y / IccPcs.D50.Y;
+            _bpcScale[2] *= white.Z / IccPcs.D50.Z;
+            _tintedGray = white != IccPcs.D50;
         }
 
         IsSrgbEquivalent = channels == 3 && CheckSrgbEquivalence();
@@ -219,7 +233,7 @@ internal sealed class IccSrgbTransform
             _bpcScale[0] * (xyz.X - BlackPoint.X),
             _bpcScale[1] * (xyz.Y - BlackPoint.Y),
             _bpcScale[2] * (xyz.Z - BlackPoint.Z));
-        if (_lut is null && Channels == 1)
+        if (_lut is null && Channels == 1 && !_tintedGray)
         {
             // A gray TRC maps onto the neutral axis; keep it exactly neutral.
             return (xyz.Y, xyz.Y, xyz.Y);
@@ -261,6 +275,20 @@ internal sealed class IccSrgbTransform
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// The media white Little CMS uses for the absolute intent (<c>_cmsReadMediaWhitePoint</c>):
+    /// the <c>wtpt</c> tag, D50 when it is missing, and D50 for v2 display profiles.
+    /// </summary>
+    private static IccXyz MediaWhite(IccProfile profile)
+    {
+        if (profile.MediaWhitePoint is not { } white || (profile.MajorVersion < 4 && profile.DeviceClass == IccProfile.ClassDisplay))
+        {
+            return IccPcs.D50;
+        }
+
+        return white.X > 0 && white.Y > 0 && white.Z > 0 && double.IsFinite(white.X + white.Y + white.Z) ? white : IccPcs.D50;
     }
 
     private IccXyz DeviceToPcs(ReadOnlySpan<double> device, IccLut? lut)
@@ -423,7 +451,7 @@ internal sealed class IccSrgbTransform
             _ => 0,
         };
         Span<double> device = stackalloc double[4];
-        if (_lut is null)
+        if (_lut is null && !(Channels == 1 && _tintedGray))
         {
             if (Channels == 1)
             {
