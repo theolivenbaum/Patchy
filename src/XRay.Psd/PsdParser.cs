@@ -29,7 +29,8 @@ internal static class PsdParser
     public static PsdDocument Parse(ReadOnlyMemory<byte> data, PsdLoadOptions options)
     {
         var reader = new BigEndianReader(data);
-        var document = new PsdDocument { FileData = data };
+        // Color management is known before parsing: descriptor and text colors convert while layers parse.
+        var document = new PsdDocument { FileData = data, ColorManagementEnabled = options.ColorManagement };
         try
         {
             ReadHeader(reader, document);
@@ -597,11 +598,11 @@ internal static class PsdParser
                     }
 
                 case "TySh":
-                    layer.Text = TextLayerInfo.Parse(data);
+                    layer.Text = TextLayerInfo.Parse(data, document.Colors);
                     layer.Kind = PsdLayerKind.Text;
                     break;
                 case "tySh":
-                    layer.Text ??= LegacyText.Parse(data);
+                    layer.Text ??= LegacyText.Parse(data, document.Colors);
                     layer.Kind = PsdLayerKind.Text;
                     break;
                 case "vmsk":
@@ -610,6 +611,7 @@ internal static class PsdParser
                     break;
                 case "vstk":
                     layer.VectorStroke ??= VectorStrokeStyle.Parse(data);
+                    layer.VectorStroke?.Content?.AttachColors(document.Colors);
                     break;
                 case "lfx2":
                 case "lfxs":
@@ -618,7 +620,7 @@ internal static class PsdParser
                         // Object-effects version u32 (0), descriptor version u32 (16), descriptor.
                         // 'lfxs' is the group (layer set) form; 'lmfx' (multiple instances)
                         // is authoritative over the compatibility lfx2 written beside it.
-                        var effects = TryReadDescriptor(data, skip: 4);
+                        var effects = TryReadDescriptor(data, skip: 4, document.Colors);
                         if (effects is not null && (block.Key == "lmfx" || !sawMultiEffects))
                         {
                             sawMultiEffects |= block.Key == "lmfx";
@@ -669,7 +671,7 @@ internal static class PsdParser
                     {
                         layer.Kind = PsdLayerKind.Fill;
                         layer.ContentKey = block.Key;
-                        layer.FillDescriptor = TryReadDescriptor(data, skip: 0);
+                        layer.FillDescriptor = TryReadDescriptor(data, skip: 0, document.Colors);
                         if (block.Key == "SoCo" && layer.FillDescriptor is { } soco)
                         {
                             layer.FillColor = soco.GetColor("Clr ");
@@ -691,14 +693,18 @@ internal static class PsdParser
         }
     }
 
-    /// <summary>Reads a u32-versioned descriptor after skipping <paramref name="skip"/> prefix bytes. Returns null when it fails to parse.</summary>
-    internal static Descriptor? TryReadDescriptor(ReadOnlyMemory<byte> data, int skip)
+    /// <summary>
+    /// Reads a u32-versioned descriptor after skipping <paramref name="skip"/> prefix bytes. Returns null when it fails to parse.
+    /// With <paramref name="colors"/>, its colors convert like the document's pixels.
+    /// </summary>
+    internal static Descriptor? TryReadDescriptor(ReadOnlyMemory<byte> data, int skip, Imaging.DocumentColors? colors = null)
     {
         try
         {
             var reader = new BigEndianReader(data);
             reader.Skip(skip);
-            return Descriptor.ReadVersioned(reader);
+            var descriptor = Descriptor.ReadVersioned(reader);
+            return colors is null ? descriptor : descriptor.AttachColors(colors);
         }
         catch (PsdFormatException)
         {

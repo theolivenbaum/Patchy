@@ -410,6 +410,220 @@ public sealed class ColorManagementTests
     }
 
     [Fact]
+    public void Cmyk_fixture_effect_and_text_colors_convert_like_the_pixels()
+    {
+        // psd_cmyk_document_converts_style_and_text_colors: the C42 M45 Y67 K13 'CMYC' overlay
+        // lands on Photoshop's (143,123,92) and the C0 M100 Y100 K0 /Type 2 text on #ed1c24.
+        var document = Fixtures.Load(CmykFixture);
+        var overlayLayer = document.Layers.Single(l => l.Name == "Overlay");
+        var effects = LayerEffects.Parse(overlayLayer.Effects!, document.GlobalLightAngle)!;
+        var text = document.Layers.Single(l => l.Name == "Label").Text!;
+
+        Assert.Equal(new PsdColor(143, 123, 92), Assert.Single(effects.Overlays).Color);
+        Assert.All(text.StyleRuns, run => Assert.Equal(new PsdColor(237, 28, 36), run.FillColor));
+        Assert.Equal(new PsdColor(237, 28, 36), document.TextEngine!.Objects.SelectMany(o => o.StyleRuns).First().FillColor);
+        var bounds = overlayLayer.Bounds;
+        var render = document.Render(new RenderOptions { Source = RenderSource.Layers });
+        Assert.Equal(new PsdColor(143, 123, 92), render.GetPixel(bounds.Left + 2, bounds.Top + 2));
+
+        // With color management off, both fall back to the naive ink mix.
+        var naive = PsdDocument.Load(Fixtures.PathOf(CmykFixture), new PsdLoadOptions { ColorManagement = false });
+        var naiveEffects = LayerEffects.Parse(naive.Layers.Single(l => l.Name == "Overlay").Effects!, naive.GlobalLightAngle)!;
+        Assert.Equal(new PsdColor(129, 122, 73), Assert.Single(naiveEffects.Overlays).Color);
+        Assert.All(naive.Layers.Single(l => l.Name == "Label").Text!.StyleRuns, run => Assert.Equal(new PsdColor(255, 0, 0), run.FillColor));
+    }
+
+    /// <summary>A <c>SoCo</c> payload: descriptor version 16, then a descriptor whose <c>Clr </c> is a <paramref name="classId"/> object.</summary>
+    private static byte[] SolidColorBlock(string classId, params (string Key, double Value)[] components)
+    {
+        var writer = new PsdBuilder.Writer();
+        writer.U32(16);
+        writer.UnicodeString(string.Empty);
+        writer.DescriptorId("null");
+        writer.U32(1);
+        writer.DescriptorId("Clr ");
+        writer.Ascii("Objc");
+        writer.UnicodeString(string.Empty);
+        writer.DescriptorId(classId);
+        writer.U32((uint)components.Length);
+        foreach (var (key, value) in components)
+        {
+            writer.DescriptorId(key);
+            writer.Ascii("doub");
+            writer.F64(value);
+        }
+
+        return writer.ToArray();
+    }
+
+    private static PsdDocument FillDocument(PsdColorMode mode, int depth, byte[]? profile, byte[] fill, bool managed = true)
+    {
+        var builder = new PsdBuilder { Width = 2, Height = 1, Mode = mode, Depth = depth };
+        if (profile is not null)
+        {
+            builder.Resources.Add((ImageResourceIds.IccProfile, "", profile));
+        }
+
+        var layer = new BuilderLayer { Name = "fill", Rect = new PsdRect(0, 0, 2, 1) };
+        layer.Blocks.Add(("SoCo", fill));
+        builder.Layers.Add(layer);
+        return PsdDocument.Load(builder.Build(), new PsdLoadOptions { ColorManagement = managed });
+    }
+
+    [Fact]
+    public void Gray_descriptor_and_text_colors_convert_through_the_gray_profile()
+    {
+        // 'Gry ' 50 is 50% black: lightness 0.5, level 128, which Gray Gamma 2.2 shows as 129 (lcms).
+        var fill = SolidColorBlock("Grsc", ("Gry ", 50));
+        var managed = FillDocument(PsdColorMode.Grayscale, 8, TestProfiles.GrayGamma22(), fill);
+        var plain = FillDocument(PsdColorMode.Grayscale, 8, TestProfiles.GrayGamma22(), fill, managed: false);
+
+        Assert.Equal(new PsdColor(129, 129, 129), managed.Layers[0].FillColor);
+        Assert.Equal(new PsdColor(128, 128, 128), plain.Layers[0].FillColor);
+
+        // EngineData /Type 0 is [alpha, lightness]; 32 / 255 converts to 26 like the pixel test above.
+        var node = Text.EngineDataParser.Parse("<< /FillColor << /Type 0 /Values [ 1.0 .12549 ] >> >>"u8)!["FillColor"];
+        Assert.Equal(new PsdColor(26, 26, 26), Text.EngineStyles.Color(node, managed.Colors));
+        Assert.Equal(new PsdColor(32, 32, 32), Text.EngineStyles.Color(node, plain.Colors));
+    }
+
+    [Fact]
+    public void Cmyk_engine_and_legacy_colors_use_the_swop_profile()
+    {
+        var document = FillDocument(PsdColorMode.Cmyk, 8, SwopProfile(), SolidColorBlock("CMYC", ("Cyn ", 43), ("Mgnt", 0), ("Ylw ", 98), ("Blck", 0)));
+
+        // The C43 Y98 fill matches the fixture's pixel pin, so a fill layer and its pixels agree.
+        Assert.Equal(new PsdColor(158, 204, 62), document.Layers[0].FillColor);
+        var node = Text.EngineDataParser.Parse("<< /FillColor << /Type 2 /Values [ 1.0 0.0 1.0 1.0 0.0 ] >> >>"u8)!["FillColor"];
+        Assert.Equal(new PsdColor(237, 28, 36), Text.EngineStyles.Color(node, document.Colors));
+
+        // PS 5 10-byte color, space 2: CMYK stored inverted (65535 = no ink).
+        byte[] legacy = [0, 2, 0xFF, 0xFF, 0, 0, 0, 0, 0xFF, 0xFF];
+        Assert.Equal(new PsdColor(237, 28, 36), Text.LegacyText.ReadColor(new IO.BigEndianReader(legacy), document.Colors));
+        Assert.Equal(new PsdColor(255, 0, 0), Text.LegacyText.ReadColor(new IO.BigEndianReader(legacy)));
+    }
+
+    [Fact]
+    public void Rgb_descriptor_colors_follow_the_document_profile()
+    {
+        var fill = SolidColorBlock("RGBC", ("Rd  ", 64), ("Grn ", 128), ("Bl  ", 192));
+
+        // Same conversion as the Adobe RGB pixels in Rgb_documents_with_a_wide_gamut_profile_convert_and_can_opt_out.
+        AssertNear(FillDocument(PsdColorMode.Rgb, 8, TestProfiles.AdobeRgb(), fill).Layers[0].FillColor!.Value, 0, 129, 196);
+        Assert.Equal(new PsdColor(64, 128, 192), FillDocument(PsdColorMode.Rgb, 8, TestProfiles.AdobeRgb(), fill, managed: false).Layers[0].FillColor);
+        Assert.Equal(new PsdColor(64, 128, 192), FillDocument(PsdColorMode.Rgb, 8, null, fill).Layers[0].FillColor);
+    }
+
+    [Fact]
+    public void Thirty_two_bit_descriptor_colors_are_linear_light()
+    {
+        // psd-tools' 300dpi.psb: Photoshop shows the (172, 11, 11) fill of a 32-bit document as its sRGB encoding.
+        var fill = SolidColorBlock("RGBC", ("Rd  ", 172), ("Grn ", 11), ("Bl  ", 11));
+        static byte Encoded(double value) => (byte)Math.Round(ColorSpaces.EncodeSrgb(value / 255) * 255);
+
+        var plain = FillDocument(PsdColorMode.Rgb, 32, null, fill).Layers[0].FillColor!.Value;
+        Assert.Equal(new PsdColor(Encoded(172), Encoded(11), Encoded(11)), plain);
+
+        // With a profile, only the colorant matrix applies, as for 32-bit pixels: linear gray stays neutral.
+        var gray = SolidColorBlock("RGBC", ("Rd  ", 127.5), ("Grn ", 127.5), ("Bl  ", 127.5));
+        AssertNear(FillDocument(PsdColorMode.Rgb, 32, TestProfiles.AdobeRgb(), gray).Layers[0].FillColor!.Value, 188, 188, 188);
+    }
+
+    /// <summary>A <c>Patt</c> block with one uncompressed 8-bit pattern of the given mode and planes.</summary>
+    private static byte[] PatternBlock(int mode, int width, int height, byte[][] planes)
+    {
+        var vma = new PsdBuilder.Writer();
+        vma.U32(0);
+        vma.U32(0);
+        vma.U32((uint)height);
+        vma.U32((uint)width);
+        vma.U32((uint)planes.Length);
+        foreach (var plane in planes)
+        {
+            vma.U32(1);
+            vma.U32((uint)(23 + plane.Length));
+            vma.U32(8);
+            vma.I32(0);
+            vma.I32(0);
+            vma.I32(height);
+            vma.I32(width);
+            vma.U16(8);
+            vma.U8(0);
+            vma.Bytes(plane);
+        }
+
+        // The two trailing slots (user mask, transparency) are not written.
+        vma.U32(0);
+        vma.U32(0);
+        var record = new PsdBuilder.Writer();
+        record.U32(1);
+        record.U32((uint)mode);
+        record.U16((ushort)height);
+        record.U16((ushort)width);
+        record.UnicodeString("tile");
+        record.U8(4);
+        record.Ascii("tile");
+        record.U32(3);
+        record.U32((uint)vma.Length);
+        record.Bytes(vma.ToArray());
+        var block = new PsdBuilder.Writer();
+        block.U32((uint)record.Length);
+        block.Bytes(record.ToArray());
+        while (block.Length % 4 != 0)
+        {
+            block.U8(0);
+        }
+
+        return block.ToArray();
+    }
+
+    [Fact]
+    public void Cmyk_pattern_tiles_convert_through_the_document_profile()
+    {
+        // Two texels, stored inverted: C43 Y98 and C0 M100 Y100.
+        byte[][] inks = [[255 - 110, 255], [255, 0], [255 - 250, 0], [255, 255]];
+        PsdDocument Load(byte[]? profile, bool managed = true)
+        {
+            var builder = new PsdBuilder { Width = 2, Height = 1, Mode = PsdColorMode.Cmyk };
+            if (profile is not null)
+            {
+                builder.Resources.Add((ImageResourceIds.IccProfile, "", profile));
+            }
+
+            builder.GlobalBlocks.Add(("Patt", PatternBlock(4, 2, 1, inks)));
+            return PsdDocument.Load(builder.Build(), new PsdLoadOptions { ColorManagement = managed });
+        }
+
+        var tile = Load(SwopProfile()).Patterns["tile"];
+        Assert.Equal([158, 204, 62, 255, 237, 28, 36, 255], tile.Rgba);
+
+        // Without a profile, the naive mix of the pixel decode.
+        Assert.Equal([145, 255, 5, 255, 255, 0, 0, 255], Load(null).Patterns["tile"].Rgba);
+        Assert.Equal([145, 255, 5, 255, 255, 0, 0, 255], Load(SwopProfile(), managed: false).Patterns["tile"].Rgba);
+    }
+
+    [Fact]
+    public void Gray_and_rgb_pattern_tiles_follow_a_matching_document_profile()
+    {
+        var gray = new PsdBuilder { Width = 1, Height = 1, Mode = PsdColorMode.Grayscale };
+        gray.Resources.Add((ImageResourceIds.IccProfile, "", TestProfiles.GrayGamma22()));
+        gray.GlobalBlocks.Add(("Patt", PatternBlock(1, 2, 1, [[32, 128]])));
+        Assert.Equal([26, 26, 26, 255, 129, 129, 129, 255], PsdDocument.Load(gray.Build()).Patterns["tile"].Rgba);
+
+        var rgb = new PsdBuilder { Width = 1, Height = 1 };
+        rgb.Resources.Add((ImageResourceIds.IccProfile, "", TestProfiles.AdobeRgb()));
+        rgb.GlobalBlocks.Add(("Patt", PatternBlock(3, 1, 1, [[64], [128], [192]])));
+        var texel = PsdDocument.Load(rgb.Build()).Patterns["tile"].Rgba;
+        AssertNear((texel[0], texel[1], texel[2]), 0, 129, 196);
+
+        // A gray tile in an RGB document has no matching profile and stays as stored.
+        var mixed = new PsdBuilder { Width = 1, Height = 1 };
+        mixed.Resources.Add((ImageResourceIds.IccProfile, "", TestProfiles.AdobeRgb()));
+        mixed.GlobalBlocks.Add(("Patt", PatternBlock(1, 1, 1, [[100]])));
+        Assert.Equal([100, 100, 100, 255], PsdDocument.Load(mixed.Build()).Patterns["tile"].Rgba);
+    }
+
+    [Fact]
     public void Srgb_profiled_fixtures_keep_their_pixels()
     {
         foreach (var name in new[] { "arrows.psd", "photoshop-posterize.psd", "photoshop-basic.psb" })

@@ -135,29 +135,73 @@ public sealed class Descriptor
 
     public string? GetEnum(string key) => TryGet(key, out var v) && v.Type == DescriptorValueType.Enum ? v.EnumValue : null;
 
-    /// <summary>Reads an RGB color object (<c>RGBC</c> with <c>Rd  </c>/<c>Grn </c>/<c>Bl  </c>), returning null for other models.</summary>
+    /// <summary>
+    /// Reads a color object (RGB, gray, CMYK, HSB or Lab) as sRGB, or null for other
+    /// models. Descriptors parsed from a document's layers convert gray, CMYK and RGB
+    /// colors the same way as that document's pixels (its embedded ICC profile).
+    /// </summary>
     public PsdColor? GetColor(string key)
     {
         var color = GetObject(key);
-        return color is null ? null : ColorFromDescriptor(color);
+        return color is null ? null : ColorFromDescriptor(color, Colors);
     }
 
-    internal static PsdColor? ColorFromDescriptor(Descriptor color)
+    /// <summary>The document color conversion this descriptor's colors go through (null: the built-in formulas).</summary>
+    internal Imaging.DocumentColors? Colors { get; private set; }
+
+    /// <summary>Makes this descriptor and every nested one convert colors through <paramref name="colors"/>.</summary>
+    internal Descriptor AttachColors(Imaging.DocumentColors colors)
+    {
+        Colors = colors;
+        foreach (var item in _items)
+        {
+            AttachColors(item.Value, colors);
+        }
+
+        return this;
+    }
+
+    private static void AttachColors(DescriptorValue value, Imaging.DocumentColors colors)
+    {
+        // Nesting depth is bounded by the reader (64 levels).
+        value.Object?.AttachColors(colors);
+        if (value.List is { } list)
+        {
+            foreach (var entry in list)
+            {
+                AttachColors(entry, colors);
+            }
+        }
+    }
+
+    internal static PsdColor? ColorFromDescriptor(Descriptor color, Imaging.DocumentColors? colors = null)
     {
         static byte Clamp(double v) => (byte)Math.Clamp(Math.Round(v), 0, 255);
 
         if (color.TryGet("Rd  ", out _) || color.TryGet("redFloat", out _))
         {
+            double red, green, blue;
             if (color.TryGet("redFloat", out var rf))
             {
-                return new PsdColor(Clamp(rf.AsNumber() * 255), Clamp(color.GetNumber("greenFloat", 0) * 255), Clamp(color.GetNumber("blueFloat", 0) * 255));
+                (red, green, blue) = (rf.AsNumber() * 255, color.GetNumber("greenFloat", 0) * 255, color.GetNumber("blueFloat", 0) * 255);
+            }
+            else
+            {
+                (red, green, blue) = (color.GetNumber("Rd  ", 0), color.GetNumber("Grn ", 0), color.GetNumber("Bl  ", 0));
             }
 
-            return new PsdColor(Clamp(color.GetNumber("Rd  ", 0)), Clamp(color.GetNumber("Grn ", 0)), Clamp(color.GetNumber("Bl  ", 0)));
+            return colors is not null ? colors.FromDescriptorRgb(red, green, blue) : new PsdColor(Clamp(red), Clamp(green), Clamp(blue));
         }
 
+        // 'Gry ' is the black percentage (100 = black) and 'CMYC' components are ink
+        // percentages (descriptor_rgb_color, .reference/src/psd/psd_layer_styles.cpp).
         if (color.TryGet("Gry ", out var gray))
         {
+            if (colors is not null)
+            {
+                return colors.FromGray(1 - (gray.AsNumber() / 100.0));
+            }
+
             var g = Clamp(255 - (gray.AsNumber() * 2.55));
             return new PsdColor(g, g, g);
         }
@@ -168,6 +212,11 @@ public sealed class Descriptor
             var m = color.GetNumber("Mgnt", 0) / 100.0;
             var y = color.GetNumber("Ylw ", 0) / 100.0;
             var k = color.GetNumber("Blck", 0) / 100.0;
+            if (colors is not null)
+            {
+                return colors.FromInk(c, m, y, k);
+            }
+
             return new PsdColor(Clamp(255 * (1 - c) * (1 - k)), Clamp(255 * (1 - m) * (1 - k)), Clamp(255 * (1 - y) * (1 - k)));
         }
 

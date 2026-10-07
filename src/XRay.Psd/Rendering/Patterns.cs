@@ -1,3 +1,4 @@
+using XRay.Psd.Imaging;
 using XRay.Psd.IO;
 using XRay.Psd.Layers;
 
@@ -64,7 +65,7 @@ internal static class PatternStore
             {
                 while (reader.Remaining >= 16)
                 {
-                    if (ParseOne(reader) is { } tile)
+                    if (ParseOne(reader, document.Colors) is { } tile)
                     {
                         patterns.TryAdd(tile.Id, tile);
                     }
@@ -79,7 +80,7 @@ internal static class PatternStore
         return patterns;
     }
 
-    private static PatternTile? ParseOne(BigEndianReader reader)
+    private static PatternTile? ParseOne(BigEndianReader reader, DocumentColors colors)
     {
         var length = reader.ReadUInt32();
         if (length < 16 || length > reader.Remaining)
@@ -106,7 +107,7 @@ internal static class PatternStore
             var supported = mode is 1 or 2 or 3 or 4 or 7;
             if (version == 1 && supported && width > 0 && height > 0 && (long)width * height <= MaxPixels && id.Length > 0)
             {
-                result = DecodeImage(reader, end, (int)mode, width, height, id, name, colorTable);
+                result = DecodeImage(reader, end, (int)mode, width, height, id, name, colorTable, colors);
             }
         }
         catch (PsdFormatException)
@@ -120,7 +121,7 @@ internal static class PatternStore
         return result;
     }
 
-    private static PatternTile? DecodeImage(BigEndianReader reader, int patternEnd, int mode, int width, int height, string id, string name, byte[]? colorTable)
+    private static PatternTile? DecodeImage(BigEndianReader reader, int patternEnd, int mode, int width, int height, string id, string name, byte[]? colorTable, DocumentColors colors)
     {
         var vmaVersion = reader.ReadUInt32();
         var vmaLength = reader.ReadUInt32();
@@ -207,7 +208,71 @@ internal static class PatternStore
             }
         }
 
+        ConvertTile(colors, mode, planes, width, height, rgba);
         return new PatternTile(id, name, width, height, rgba);
+    }
+
+    /// <summary>
+    /// Converts a tile in the document's own color space through its ICC profile,
+    /// like the pixels: CMYK tiles in CMYK documents (the reference's
+    /// <c>parse_single_pattern</c> with <c>cmyk_icc</c>), and, because this port
+    /// converts RGB and gray pixels too, RGB and indexed tiles in RGB documents and
+    /// gray tiles in grayscale documents. Other tiles keep the built-in formulas.
+    /// </summary>
+    private static void ConvertTile(DocumentColors colors, int mode, Plane?[] planes, int width, int height, byte[] rgba)
+    {
+        var channels = mode switch { 4 => 4, 2 or 3 => 3, 1 => 1, _ => 0 };
+        if (channels == 0 || colors.TransformFor(channels) is null)
+        {
+            return;
+        }
+
+        var count = width * height;
+        var device = new float[channels][];
+        for (var c = 0; c < channels; c++)
+        {
+            device[c] = new float[count];
+        }
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var i = (y * width) + x;
+                if (mode == 4)
+                {
+                    // Inverted inks (255 = no ink), the PSD channel convention the transform expects.
+                    for (var c = 0; c < 4; c++)
+                    {
+                        device[c][i] = Sample(planes[c], x, y, 255) / 255f;
+                    }
+                }
+                else
+                {
+                    // Gray, RGB and indexed tiles already hold their device values in the RGBA bytes.
+                    for (var c = 0; c < channels; c++)
+                    {
+                        device[c][i] = rgba[(i * 4) + c] / 255f;
+                    }
+                }
+            }
+        }
+
+        var image = new PlanarImage(new PsdRect(0, 0, width, height));
+        if (!colors.TryConvert(device, image))
+        {
+            return;
+        }
+
+        var bytes = new byte[count];
+        foreach (var (plane, offset) in new[] { (image.R, 0), (image.G, 1), (image.B, 2) })
+        {
+            PlanarImage.UnitFloatToBytes(plane, bytes);
+            for (var i = 0; i < count; i++)
+            {
+                rgba[(i * 4) + offset] = bytes[i];
+            }
+        }
     }
 
     private sealed record Plane(int Top, int Left, int Width, int Height, byte[] Samples);

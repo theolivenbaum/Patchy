@@ -249,7 +249,10 @@ public sealed class TextLayerInfo
     }
 
     /// <summary>Parses a <c>TySh</c> tagged-block payload. Returns null when it does not decode.</summary>
-    public static TextLayerInfo? Parse(ReadOnlyMemory<byte> payload)
+    public static TextLayerInfo? Parse(ReadOnlyMemory<byte> payload) => Parse(payload, null);
+
+    /// <summary>Parses a <c>TySh</c> payload whose colors convert like the document's pixels.</summary>
+    internal static TextLayerInfo? Parse(ReadOnlyMemory<byte> payload, Imaging.DocumentColors? colors)
     {
         try
         {
@@ -277,7 +280,7 @@ public sealed class TextLayerInfo
                 }
             }
 
-            return FromDescriptor(text, warp, transform);
+            return FromDescriptor(text, warp, transform, colors);
         }
         catch (PsdFormatException)
         {
@@ -370,7 +373,7 @@ public sealed class TextLayerInfo
         return fonts;
     }
 
-    private static TextLayerInfo FromDescriptor(Descriptor text, Descriptor? warp, double[] transform)
+    private static TextLayerInfo FromDescriptor(Descriptor text, Descriptor? warp, double[] transform, Imaging.DocumentColors? colors)
     {
         var raw = text.GetString("Txt ") ?? string.Empty;
         EngineValue? engine = null;
@@ -397,7 +400,7 @@ public sealed class TextLayerInfo
         if (engine is not null)
         {
             var source = string.IsNullOrEmpty(engineText) ? raw : engineText;
-            runs = ReadStyleRuns(engine, source);
+            runs = ReadStyleRuns(engine, source, colors);
             paragraphs = ReadParagraphs(engine, source);
             var shape = engine.Get("EngineDict", "Rendered", "Shapes", "Children", 0);
             shapeType = EngineStyles.Integer(shape?["ShapeType"]) ?? EngineStyles.Integer(shape?.Get("Cookie", "Photoshop", "ShapeType"));
@@ -503,7 +506,7 @@ public sealed class TextLayerInfo
         _ => null,
     };
 
-    private static List<TextStyleRun> ReadStyleRuns(EngineValue engine, string text)
+    private static List<TextStyleRun> ReadStyleRuns(EngineValue engine, string text, Imaging.DocumentColors? colors)
     {
         var runs = new List<TextStyleRun>();
         var fontNames = new List<string>();
@@ -543,7 +546,8 @@ public sealed class TextLayerInfo
                 key => style?[key] ?? defaultStyle?[key],
                 StyleKeys.TypeTool,
                 fontNames,
-                1));
+                1,
+                colors));
             start += length;
         }
 
