@@ -382,7 +382,7 @@ internal sealed partial class LayerCompositor
             return cached;
         }
 
-        var pixels = layer.DecodePixels();
+        var pixels = layer.Kind == PsdLayerKind.Text && _options.TextRasterizer is { } textRasterizer ? TextLayerPixels(layer, textRasterizer) : layer.DecodePixels();
         if (layer.Kind == PsdLayerKind.Fill && (pixels is null || IsEmptyCoverage(pixels)) && StrokedShapePixels(layer) is { } shape)
         {
             pixels = shape;
