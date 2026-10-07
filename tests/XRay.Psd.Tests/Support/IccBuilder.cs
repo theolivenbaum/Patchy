@@ -279,6 +279,67 @@ internal sealed class IccBuilder
         return data;
     }
 
+    /// <summary>A <c>parf</c> formula segment (type 0: gamma, a, b, c; types 1 and 2: five parameters).</summary>
+    public static byte[] FormulaSegment(int type, params float[] parameters) =>
+        [.. Ascii("parf"), 0, 0, 0, 0, .. U16(type), 0, 0, .. Floats(parameters)];
+
+    /// <summary>A <c>samf</c> sampled segment (the first point is implicit).</summary>
+    public static byte[] SampledSegment(params float[] samples) =>
+        [.. Ascii("samf"), 0, 0, 0, 0, .. U32(samples.Length), .. Floats(samples)];
+
+    /// <summary>A <c>curf</c> segmented curve: breakpoints between the segments.</summary>
+    public static byte[] SegmentedCurve(float[] breakpoints, params byte[][] segments) =>
+        [.. Ascii("curf"), 0, 0, 0, 0, .. U16(segments.Length), 0, 0, .. Floats(breakpoints), .. segments.SelectMany(s => s)];
+
+    /// <summary>A <c>cvst</c> curve set element.</summary>
+    public static byte[] CurveSetElement(params byte[][] curves) =>
+        [.. Ascii("cvst"), 0, 0, 0, 0, .. U16(curves.Length), .. U16(curves.Length), .. PositionTable(12 + (8 * curves.Length), curves)];
+
+    /// <summary>A <c>matf</c> element: an outputs x inputs matrix (row major), then the offsets.</summary>
+    public static byte[] MatrixElement(int inputs, int outputs, float[] matrix, float[] offsets) =>
+        [.. Ascii("matf"), 0, 0, 0, 0, .. U16(inputs), .. U16(outputs), .. Floats(matrix), .. Floats(offsets)];
+
+    /// <summary>A float <c>clut</c> element (first input varies slowest).</summary>
+    public static byte[] ClutElement(int inputs, int outputs, byte[] grid, float[] values)
+    {
+        var points = new byte[16];
+        grid.CopyTo(points, 0);
+        return [.. Ascii("clut"), 0, 0, 0, 0, .. U16(inputs), .. U16(outputs), .. points, .. Floats(values)];
+    }
+
+    /// <summary>A multiProcessElementsType (<c>mpet</c>) tag, as used by <c>D2Bx</c>.</summary>
+    public static byte[] MultiProcess(int inputs, int outputs, params byte[][] elements) =>
+        [.. Ascii("mpet"), 0, 0, 0, 0, .. U16(inputs), .. U16(outputs), .. U32(elements.Length), .. PositionTable(16 + (8 * elements.Length), elements)];
+
+    private static byte[] PositionTable(int start, byte[][] items)
+    {
+        var table = new List<byte>();
+        var body = new List<byte>();
+        foreach (var item in items)
+        {
+            table.AddRange(U32(start + body.Count));
+            table.AddRange(U32(item.Length));
+            body.AddRange(item);
+            while (body.Count % 4 != 0)
+            {
+                body.Add(0);
+            }
+        }
+
+        return [.. table, .. body];
+    }
+
+    private static byte[] U16(int value) => [(byte)(value >> 8), (byte)value];
+
+    private static byte[] U32(int value) => [(byte)(value >> 24), (byte)(value >> 16), (byte)(value >> 8), (byte)value];
+
+    private static byte[] Floats(IEnumerable<float> values) => [.. values.SelectMany(v =>
+    {
+        var bytes = new byte[4];
+        BinaryPrimitives.WriteSingleBigEndian(bytes, v);
+        return bytes;
+    })];
+
     public static int Fixed(double value) => (int)Math.Round(value * 65536);
 
     public static ushort Word(double value) => (ushort)Math.Clamp(Math.Round(value * 65535), 0, 65535);

@@ -487,40 +487,33 @@ internal sealed class IccSrgbTransform
                 }
             }
 
-            // linear sRGB = S * diag(scale) * (C * rgb + offset - black)
-            var scaled = new double[9];
-            var colorants = _shaperMatrix;
-            for (var row = 0; row < 3; row++)
-            {
-                for (var column = 0; column < 3; column++)
-                {
-                    scaled[(row * 3) + column] = _bpcScale[row] * colorants[(row * 3) + column];
-                }
-            }
-
-            var matrix = IccPcs.Multiply3x3(IccPcs.XyzD50ToSrgb, scaled);
-            var s = IccPcs.XyzD50ToSrgb;
-            var shift = new IccXyz(
-                _bpcScale[0] * (_shaperOffset[0] - BlackPoint.X),
-                _bpcScale[1] * (_shaperOffset[1] - BlackPoint.Y),
-                _bpcScale[2] * (_shaperOffset[2] - BlackPoint.Z));
-            var coefficients = new float[12];
-            for (var row = 0; row < 3; row++)
-            {
-                for (var column = 0; column < 3; column++)
-                {
-                    coefficients[(row * 3) + column] = (float)matrix[(row * 3) + column];
-                }
-
-                coefficients[9 + row] = (float)((s[row * 3] * shift.X) + (s[(row * 3) + 1] * shift.Y) + (s[(row * 3) + 2] * shift.Z));
-            }
-
-            return new Tables { Kind = TableKind.Matrix, MaxIndex = Math.Max(levels - 1, 0), Red = red, Green = green, Blue = blue, Coefficients = coefficients };
+            return new Tables { Kind = TableKind.Matrix, MaxIndex = Math.Max(levels - 1, 0), Red = red, Green = green, Blue = blue, Coefficients = MatrixCoefficients(_shaperMatrix, _shaperOffset) };
         }
 
-        if (depth == 32 && Channels != 4)
+        if (depth == 32 && Channels == 3)
         {
-            // 32-bit gray and RGB hold linear light; their LUT profiles describe encoded values.
+            // 32-bit RGB holds linear light while a LUT profile describes encoded values. Photoshop works
+            // on a linear-gamma version of the profile; for a LUT the closest is its colorants: the PCS of
+            // each full primary over the PCS of device black, applied as a matrix to the linear data.
+            Span<double> corner = stackalloc double[3];
+            var black = DeviceToPcs(corner);
+            var colorants = new double[9];
+            for (var column = 0; column < 3; column++)
+            {
+                corner.Clear();
+                corner[column] = 1;
+                var primary = DeviceToPcs(corner);
+                colorants[column] = primary.X - black.X;
+                colorants[3 + column] = primary.Y - black.Y;
+                colorants[6 + column] = primary.Z - black.Z;
+            }
+
+            return new Tables { Kind = TableKind.Matrix, Coefficients = MatrixCoefficients(colorants, [black.X, black.Y, black.Z]) };
+        }
+
+        if (depth == 32 && Channels == 1)
+        {
+            // 32-bit gray holds linear light; a gray LUT describes encoded values (the fallback treats it as linear luminance).
             return Tables.None;
         }
 
@@ -546,6 +539,42 @@ internal sealed class IccSrgbTransform
         }
 
         return new Tables { Kind = TableKind.Grid4, MaxIndex = CmykGridPoints - 1, GridPoints = CmykGridPoints, Grid = SampleGrid(4, CmykGridPoints) };
+    }
+
+    /// <summary>
+    /// Folds black point compensation (and the absolute intent's white scaling) and the
+    /// sRGB matrix into one 3x3 matrix plus offset over device-linear RGB:
+    /// <c>linear sRGB = S * diag(scale) * (C * rgb + offset - black)</c>.
+    /// </summary>
+    private float[] MatrixCoefficients(double[] colorants, double[] offset)
+    {
+        var scaled = new double[9];
+        for (var row = 0; row < 3; row++)
+        {
+            for (var column = 0; column < 3; column++)
+            {
+                scaled[(row * 3) + column] = _bpcScale[row] * colorants[(row * 3) + column];
+            }
+        }
+
+        var matrix = IccPcs.Multiply3x3(IccPcs.XyzD50ToSrgb, scaled);
+        var s = IccPcs.XyzD50ToSrgb;
+        var shift = new IccXyz(
+            _bpcScale[0] * (offset[0] - BlackPoint.X),
+            _bpcScale[1] * (offset[1] - BlackPoint.Y),
+            _bpcScale[2] * (offset[2] - BlackPoint.Z));
+        var coefficients = new float[12];
+        for (var row = 0; row < 3; row++)
+        {
+            for (var column = 0; column < 3; column++)
+            {
+                coefficients[(row * 3) + column] = (float)matrix[(row * 3) + column];
+            }
+
+            coefficients[9 + row] = (float)((s[row * 3] * shift.X) + (s[(row * 3) + 1] * shift.Y) + (s[(row * 3) + 2] * shift.Z));
+        }
+
+        return coefficients;
     }
 
     /// <summary>

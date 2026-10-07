@@ -10,6 +10,9 @@ internal enum IccPcsEncoding
 
     /// <summary>v2 16-bit Lab in <c>mft2</c>: L 100 at 0xFF00, a/b 0 at 0x8000.</summary>
     LabV2,
+
+    /// <summary>Real PCS values from a float <c>mpet</c> LUT: XYZ with white Y = 1, or L* a* b*.</summary>
+    Float,
 }
 
 /// <summary>
@@ -37,6 +40,10 @@ internal sealed class IccLut
     }
 
     public int InputChannels { get; }
+
+    /// <summary>A LUT built from already parsed stages (the float <c>mpet</c> reader).</summary>
+    internal static IccLut FromStages(int inputs, int outputs, IccPcsEncoding encoding, IccLutStage[] stages, string type) =>
+        new(inputs, outputs, encoding, stages) { Type = type };
 
     public int OutputChannels { get; }
 
@@ -123,6 +130,7 @@ internal sealed class IccLut
                 "mft2" => ParseLut8Or16(tag, sixteenBit: true),
                 "mAB " => ParseLutAb(tag, aToB: true),
                 "mBA " => ParseLutAb(tag, aToB: false),
+                "mpet" => IccMpet.Parse(tag),
                 _ => null,
             };
         }

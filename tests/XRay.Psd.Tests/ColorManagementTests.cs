@@ -328,6 +328,121 @@ public sealed class ColorManagementTests
         AssertNear(Convert(Transform(display, 3, Absolute), 64, 128, 192), 0, 129, 196);
     }
 
+    /// <summary>A v4 profile whose only conversion is a float <c>D2B0</c>/<c>D2B1</c> pair (Little CMS reads no D2B0 fallback for relative).</summary>
+    private static byte[] FloatProfile(string deviceClass, string space, string pcs, byte[] mpet) =>
+        new IccBuilder { Version = 0x04300000, DeviceClass = deviceClass, ColorSpace = space, Pcs = pcs }
+            .Add("desc", IccBuilder.Description("Test float"))
+            .Add("wtpt", IccBuilder.Xyz(0.9642, 1.0, 0.8249))
+            .Add("D2B0", mpet)
+            .Add("D2B1", mpet)
+            .Build();
+
+    [Theory]
+    [InlineData(255, 255, 255, 255, 255, 255)]
+    [InlineData(64, 128, 192, 0, 129, 196)]
+    [InlineData(128, 128, 128, 129, 129, 129)]
+    [InlineData(10, 20, 30, 1, 12, 24)]
+    [InlineData(0, 255, 0, 0, 255, 0)]
+    public void Float_rgb_profile_with_formula_curves_and_a_matrix_converts_like_lcms(int r, int g, int b, int er, int eg, int eb)
+    {
+        // Adobe RGB as an mpet: three-segment parametric curves (0 below 0, x^2.2, then x), then a matf.
+        var curve = IccBuilder.SegmentedCurve(
+            [0f, 1f],
+            IccBuilder.FormulaSegment(0, 1, 0, 0, 0),
+            IccBuilder.FormulaSegment(0, 2.2f, 1, 0, 0),
+            IccBuilder.FormulaSegment(0, 1, 1, 0, 0));
+        float[] matrix =
+        [
+            (float)TestProfiles.AdobeRed[0], (float)TestProfiles.AdobeGreen[0], (float)TestProfiles.AdobeBlue[0],
+            (float)TestProfiles.AdobeRed[1], (float)TestProfiles.AdobeGreen[1], (float)TestProfiles.AdobeBlue[1],
+            (float)TestProfiles.AdobeRed[2], (float)TestProfiles.AdobeGreen[2], (float)TestProfiles.AdobeBlue[2],
+        ];
+        var mpet = IccBuilder.MultiProcess(3, 3, IccBuilder.CurveSetElement(curve, curve, curve), IccBuilder.MatrixElement(3, 3, matrix, [0, 0, 0]));
+        var transform = Transform(FloatProfile("mntr", "RGB ", "XYZ ", mpet), 3);
+
+        Assert.Equal("mpet", IccProfile.Parse(FloatProfile("mntr", "RGB ", "XYZ ", mpet))!.InputLut(IccRenderingIntent.RelativeColorimetric)!.Type);
+        AssertNear(Convert(transform, r, g, b), er, eg, eb);
+    }
+
+    [Fact]
+    public void Float_cmyk_and_gray_profiles_with_sampled_curves_and_a_clut_convert_like_lcms()
+    {
+        // Sampled segment on (0, 1] (implicit 0 at x = 0), constant 1 above, 0 below.
+        var sampled = IccBuilder.SegmentedCurve(
+            [0f, 1f],
+            IccBuilder.FormulaSegment(0, 1, 0, 0, 0),
+            IccBuilder.SampledSegment(0.1f, 0.35f, 0.7f, 1f),
+            IccBuilder.FormulaSegment(0, 1, 0, 1, 0));
+        var values = new List<float>();
+        for (var node = 0; node < 81; node++)
+        {
+            int c = node / 27, m = node / 9 % 3, y = node / 3 % 3, k = node % 3;
+            var (l, a, b) = TestProfiles.PressLab(c / 2.0, m / 2.0, y / 2.0, k / 2.0);
+            values.AddRange([(float)l, (float)a, (float)b]);
+        }
+
+        var cmyk = IccBuilder.MultiProcess(4, 3, IccBuilder.CurveSetElement(sampled, sampled, sampled, sampled), IccBuilder.ClutElement(4, 3, [3, 3, 3, 3], [.. values]));
+        var press = Transform(FloatProfile("prtr", "CMYK", "Lab ", cmyk), 4);
+        AssertNear(Convert(press, 0, 0, 0, 0), 255, 255, 255);
+        AssertNear(Convert(press, 0, 0, 0, 255), 94, 94, 94);
+        AssertNear(Convert(press, 255, 255, 255, 255), 50, 0, 0);
+        AssertNear(Convert(press, 0, 255, 255, 0), 255, 146, 67);
+        AssertNear(Convert(press, 128, 128, 128, 128), 181, 157, 137);
+        AssertNear(Convert(press, 64, 32, 200, 10), 255, 234, 139);
+
+        var graySampled = IccBuilder.SegmentedCurve(
+            [0f, 1f],
+            IccBuilder.FormulaSegment(0, 1, 0, 0, 0),
+            IccBuilder.SampledSegment(0.01f, 0.05f, 0.2f, 0.5f, 1f),
+            IccBuilder.FormulaSegment(0, 1, 0, 1, 0));
+        var gray = Transform(FloatProfile("mntr", "GRAY", "XYZ ", IccBuilder.MultiProcess(1, 3, IccBuilder.CurveSetElement(graySampled), IccBuilder.MatrixElement(1, 3, [0.9642f, 1f, 0.8249f], [0, 0, 0]))), 1);
+        foreach (var (level, expected) in new[] { (0, 0), (32, 18), (64, 39), (128, 100), (200, 184), (255, 255) })
+        {
+            AssertNear(Convert(gray, level), expected, expected, expected);
+        }
+
+        // Through the planar CMYK grid too, as pixels would.
+        var planes = new[] { new[] { 127 / 255f }, new[] { 127 / 255f }, new[] { 127 / 255f }, new[] { 127 / 255f } };
+        var image = new PlanarImage(new PsdRect(0, 0, 1, 1));
+        Assert.True(press.Apply(planes, 8, image));
+        AssertNear(((int)Math.Round(image.R[0] * 255), (int)Math.Round(image.G[0] * 255), (int)Math.Round(image.B[0] * 255)), 181, 157, 137);
+    }
+
+    [Fact]
+    public void Damaged_float_luts_are_dropped()
+    {
+        var curve = IccBuilder.SegmentedCurve([], IccBuilder.FormulaSegment(0, 1, 1, 0, 0));
+        var good = IccBuilder.MultiProcess(1, 3, IccBuilder.CurveSetElement(curve), IccBuilder.MatrixElement(1, 3, [0.9642f, 1f, 0.8249f], [0, 0, 0]));
+        Assert.NotNull(IccLut.Parse(good));
+
+        // Truncated anywhere, or with an element whose channel count does not chain, the tag is ignored.
+        for (var length = 0; length < good.Length; length++)
+        {
+            Assert.Null(IccLut.Parse(good.AsSpan(0, length)));
+        }
+
+        var mismatched = IccBuilder.MultiProcess(1, 3, IccBuilder.CurveSetElement(curve, curve), IccBuilder.MatrixElement(1, 3, [1f, 1f, 1f], [0, 0, 0]));
+        Assert.Null(IccLut.Parse(mismatched));
+
+        // Random corruption must degrade, never throw.
+        var profile = FloatProfile("mntr", "GRAY", "XYZ ", good);
+        var random = new Random(5);
+        for (var trial = 0; trial < 300; trial++)
+        {
+            var damaged = profile.ToArray();
+            for (var flips = 0; flips < 4; flips++)
+            {
+                damaged[random.Next(128, damaged.Length)] = (byte)random.Next(256);
+            }
+
+            if (IccProfile.Parse(damaged) is { } parsed && IccSrgbTransform.Create(parsed, 1, IccTransformSettings.Default) is { } transform)
+            {
+                _ = transform.Evaluate([0.5]);
+                Assert.True(transform.Apply([[0f, 0.5f, 1f]], 8, new PlanarImage(new PsdRect(0, 0, 3, 1))));
+            }
+        }
+    }
+
     [Fact]
     public void Swop_black_point_matches_lcms()
     {
@@ -964,6 +1079,45 @@ public sealed class ColorManagementTests
         {
             Assert.True(pixels.GetPixel(x, 0).R >= previous);
             previous = pixels.GetPixel(x, 0).R;
+        }
+    }
+
+    [Fact]
+    public void Thirty_two_bit_rgb_with_a_lut_profile_uses_its_colorants()
+    {
+        // The Adobe RGB model sampled into an mft2 CLUT with an XYZ PCS: at 32 bits the data is
+        // linear, so only the LUT's primaries matter, and they match the matrix/TRC profile.
+        var lut = new IccBuilder { DeviceClass = "scnr" }
+            .Add("desc", IccBuilder.Description("Test Adobe RGB CLUT"))
+            .Add("wtpt", IccBuilder.Xyz(0.9642, 1.0, 0.8249))
+            .Add("A2B0", IccBuilder.Lut(true, 3, 3, 9, node =>
+            {
+                var r = Math.Pow(node[0], 563 / 256.0);
+                var g = Math.Pow(node[1], 563 / 256.0);
+                var b = Math.Pow(node[2], 563 / 256.0);
+                double[] red = TestProfiles.AdobeRed, green = TestProfiles.AdobeGreen, blue = TestProfiles.AdobeBlue;
+                return [.. Enumerable.Range(0, 3).Select(i => ((red[i] * r) + (green[i] * g) + (blue[i] * b)) * 32768 / 65535)];
+            }))
+            .Build();
+        var random = new Random(11);
+        float[][] linear = [new float[64], new float[64], new float[64]];
+        for (var i = 0; i < 64; i++)
+        {
+            for (var c = 0; c < 3; c++)
+            {
+                linear[c][i] = (float)random.NextDouble();
+            }
+        }
+
+        var fromLut = new PlanarImage(new PsdRect(0, 0, 64, 1));
+        var fromMatrix = new PlanarImage(new PsdRect(0, 0, 64, 1));
+        Assert.True(Transform(lut, 3).Apply(linear, 32, fromLut));
+        Assert.True(Transform(TestProfiles.AdobeRgb(), 3).Apply(linear, 32, fromMatrix));
+        for (var i = 0; i < 64; i++)
+        {
+            Assert.Equal(fromMatrix.R[i], fromLut.R[i], 0.002f);
+            Assert.Equal(fromMatrix.G[i], fromLut.G[i], 0.002f);
+            Assert.Equal(fromMatrix.B[i], fromLut.B[i], 0.002f);
         }
     }
 
