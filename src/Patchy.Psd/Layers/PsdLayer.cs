@@ -215,7 +215,7 @@ public sealed class PsdLayer
         }
 
         var image = new PlanarImage(bounds);
-        ColorSpaces.ToRgb(doc.ColorMode, doc.Depth, planes, image, doc.Palette);
+        ColorSpaces.ToRgb(doc, doc.Depth, planes, image);
         if (alpha is not null)
         {
             alpha.AsSpan().CopyTo(image.A);

@@ -105,7 +105,7 @@ internal static class MergedImageDecoder
             ChannelCodec.ToFloat(planes[c], width, height, depth, floats[c]);
         }
 
-        ColorSpaces.ToRgb(document.ColorMode, depth, floats, image, document.Palette);
+        ColorSpaces.ToRgb(document, depth, floats, image);
         if (wanted > colorCount)
         {
             ChannelCodec.ToFloat(planes[colorCount], width, height, depth, image.A);

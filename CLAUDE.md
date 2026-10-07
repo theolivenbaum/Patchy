@@ -21,7 +21,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/Patchy.Psd/Layers/` | `PsdLayer`, `LayerMask`, `VectorPath` (path records to pixel coordinates) |
 | `src/Patchy.Psd/Descriptors/` | Action Manager descriptor reader (`Objc`, `VlLs`, `UntF`, `tdta`, `obj `...) |
 | `src/Patchy.Psd/Text/` | `EngineData` parser, `TextLayerInfo` (TySh), `LegacyText` (PS 5 tySh), `TextExtractor` |
-| `src/Patchy.Psd/Imaging/` | `RgbaImage` (public output), `PlanarImage` (internal float planes), `ColorSpaces` |
+| `src/Patchy.Psd/Imaging/` | `RgbaImage` (public output), `PlanarImage` (internal float planes), `ColorSpaces`; `Icc/` holds the ICC parser and profile-to-sRGB transforms |
 | `src/Patchy.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`), SIMD `BlendKernels`/`BlendOps`, `MaskSampler`, `PathRasterizer`, `EffectMasks`, `LayerEffects`, `Gradient`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
 | `src/Patchy.Psd/Codecs/` | Built-in `PngEncoder` and baseline `JpegEncoder` |
 | `src/Patchy.Psd.Skia/` | Optional SkiaSharp interop (SKBitmap/SKImage, Skia encoders such as WebP) |
@@ -31,6 +31,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `tests/fixtures/psd/` | Committed PSD/PSB fixtures and Photoshop reference renders (`.bmp`) copied from `.reference/test-fixtures/psd` |
 | `docs/porting-map.md` | Which reference files each C# area came from, and what was deliberately left out |
 | `docs/rendering.md` | Compositor model, effect pipeline, calibration status |
+| `docs/color.md` | ICC color management: what converts, Little CMS parity, accuracy |
 
 ## Commands
 
