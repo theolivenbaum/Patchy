@@ -170,6 +170,258 @@ internal static class EffectMasks
         SoftExterior(mask, width, height, size, choke);
     }
 
+    /// <summary>
+    /// Outer glow "Precise": the chamfer distance to the matte, carried with the
+    /// strength of the nearest connected component, through a smoothstep falloff
+    /// that stays solid over the spread share of the size (reference
+    /// <c>distance_falloff_mask</c> and <c>layer_style_falloff_alpha</c>,
+    /// layer_style_mask_ops.cpp). The reference keeps this uncalibrated legacy
+    /// ramp; Range does not apply to it.
+    /// </summary>
+    public static void PreciseExterior(float[] mask, int width, int height, float size, float spread)
+    {
+        ChamferDistanceAndStrengths(mask, width, height, out var distances, out var strengths);
+        for (var i = 0; i < mask.Length; i++)
+        {
+            mask[i] = strengths[i] * FalloffAlpha(distances[i], size, spread);
+        }
+    }
+
+    /// <summary>
+    /// Inner glow "Precise": the reference's historical interior falloff
+    /// (<c>prepare_layer_style_interior_falloff_mask</c>, and the plain blurred
+    /// matte for a Center source without choke). Three count-normalized box passes
+    /// of radius round(size / 2); choke first grows the inverse matte by
+    /// choke% x size with a 1 px ramp and blurs only the remaining size. The result
+    /// is the glow field: 1 at the contour fading inward for Edge, its complement
+    /// for Center. Range does not apply.
+    /// </summary>
+    public static void PreciseInterior(float[] mask, int width, int height, float size, float choke, bool center)
+    {
+        var chokeUnit = Math.Clamp(choke / 100f, 0f, 1f);
+        size = Math.Max(0f, size);
+        if (chokeUnit <= 0f)
+        {
+            BoxBlur(mask, width, height, InteriorBlurRadius(size), 3);
+            if (!center)
+            {
+                for (var i = 0; i < mask.Length; i++)
+                {
+                    mask[i] = Math.Clamp(1f - mask[i], 0f, 1f);
+                }
+            }
+
+            return;
+        }
+
+        for (var i = 0; i < mask.Length; i++)
+        {
+            mask[i] = 1f - Math.Clamp(mask[i], 0f, 1f);
+        }
+
+        ChamferExpand(mask, width, height, size * chokeUnit);
+        BoxBlur(mask, width, height, InteriorBlurRadius(size * (1f - chokeUnit)), 3);
+        for (var i = 0; i < mask.Length; i++)
+        {
+            var value = Math.Clamp(mask[i], 0f, 1f);
+            mask[i] = center ? 1f - value : value;
+        }
+    }
+
+    /// <summary>The interior effects' historical blur radius, round(size / 2) (reference <c>interior_style_blur_radius</c>).</summary>
+    public static int InteriorBlurRadius(float size) => Math.Max(0, (int)MathF.Round(size * 0.5f, MidpointRounding.AwayFromZero));
+
+    /// <summary>
+    /// Grows a mask by <paramref name="radius"/> with a 1 px ramp along chamfer
+    /// distances, keeping the source component strength (reference
+    /// <c>expand_layer_style_mask_in_place</c>).
+    /// </summary>
+    private static void ChamferExpand(float[] mask, int width, int height, float radius)
+    {
+        if (radius <= 0f || mask.Length == 0)
+        {
+            return;
+        }
+
+        ChamferDistanceAndStrengths(mask, width, height, out var distances, out var strengths);
+        for (var i = 0; i < mask.Length; i++)
+        {
+            var coverage = Math.Clamp(radius + 1f - distances[i], 0f, 1f);
+            mask[i] = Math.Max(mask[i], strengths[i] * coverage);
+        }
+    }
+
+    /// <summary>1 inside the spread share, smoothstep down to 0 at <paramref name="size"/> (reference <c>layer_style_falloff_alpha</c>).</summary>
+    internal static float FalloffAlpha(float distance, float size, float spread)
+    {
+        var radius = Math.Max(0f, size);
+        if (radius <= 0f)
+        {
+            return distance <= 0f ? 1f : 0f;
+        }
+
+        if (distance > radius)
+        {
+            return 0f;
+        }
+
+        var spreadUnit = Math.Clamp(spread / 100f, 0f, 1f);
+        var solid = radius * spreadUnit;
+        if (distance <= solid || spreadUnit >= 0.999f)
+        {
+            return 1f;
+        }
+
+        var t = Math.Clamp((distance - solid) / Math.Max(0.001f, radius - solid), 0f, 1f);
+        return 1f - (t * t * (3f - (2f * t)));
+    }
+
+    /// <summary>
+    /// Two-pass 1/sqrt(2) chamfer distance to the nearest painted (&gt; 0) pixel,
+    /// carrying the maximum alpha of that pixel's 8-connected component; ties within
+    /// 0.001 prefer the stronger source. Deterministic scan order, as in the reference
+    /// <c>chamfer_distance_and_strengths</c>.
+    /// </summary>
+    internal static void ChamferDistanceAndStrengths(float[] input, int width, int height, out float[] distances, out float[] strengths)
+    {
+        const float diagonal = 1.41421356237f;
+        var sources = ComponentStrengths(input, width, height);
+        distances = new float[input.Length];
+        strengths = new float[input.Length];
+        for (var i = 0; i < input.Length; i++)
+        {
+            if (input[i] > 0f)
+            {
+                strengths[i] = Math.Clamp(sources[i], 0f, 1f);
+            }
+            else
+            {
+                distances[i] = Unreached;
+            }
+        }
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var i = (y * width) + x;
+                if (x > 0)
+                {
+                    Relax(distances, strengths, i, i - 1, 1f);
+                }
+
+                if (y > 0)
+                {
+                    Relax(distances, strengths, i, i - width, 1f);
+                    if (x > 0)
+                    {
+                        Relax(distances, strengths, i, i - width - 1, diagonal);
+                    }
+
+                    if (x + 1 < width)
+                    {
+                        Relax(distances, strengths, i, i - width + 1, diagonal);
+                    }
+                }
+            }
+        }
+
+        for (var y = height - 1; y >= 0; y--)
+        {
+            for (var x = width - 1; x >= 0; x--)
+            {
+                var i = (y * width) + x;
+                if (x + 1 < width)
+                {
+                    Relax(distances, strengths, i, i + 1, 1f);
+                }
+
+                if (y + 1 < height)
+                {
+                    Relax(distances, strengths, i, i + width, 1f);
+                    if (x + 1 < width)
+                    {
+                        Relax(distances, strengths, i, i + width + 1, diagonal);
+                    }
+
+                    if (x > 0)
+                    {
+                        Relax(distances, strengths, i, i + width - 1, diagonal);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void Relax(float[] distances, float[] strengths, int index, int candidate, float step)
+    {
+        const float tolerance = 0.001f;
+        var candidateStrength = strengths[candidate];
+        if (candidateStrength <= 0f)
+        {
+            return;
+        }
+
+        var candidateDistance = distances[candidate] + step;
+        if (candidateDistance + tolerance < distances[index] ||
+            (MathF.Abs(candidateDistance - distances[index]) <= tolerance && candidateStrength > strengths[index]))
+        {
+            distances[index] = candidateDistance;
+            strengths[index] = candidateStrength;
+        }
+    }
+
+    /// <summary>Each painted pixel gets the maximum alpha of its 8-connected component (reference <c>layer_style_source_strengths</c>).</summary>
+    private static float[] ComponentStrengths(float[] input, int width, int height)
+    {
+        var strengths = new float[input.Length];
+        var visited = new bool[input.Length];
+        var stack = new Stack<int>();
+        var component = new List<int>();
+        for (var start = 0; start < input.Length; start++)
+        {
+            if (visited[start] || input[start] <= 0f)
+            {
+                continue;
+            }
+
+            stack.Clear();
+            component.Clear();
+            stack.Push(start);
+            visited[start] = true;
+            var strength = Math.Clamp(input[start], 0f, 1f);
+            while (stack.Count > 0)
+            {
+                var index = stack.Pop();
+                component.Add(index);
+                strength = Math.Max(strength, Math.Clamp(input[index], 0f, 1f));
+                var x = index % width;
+                var y = index / width;
+                for (var ny = Math.Max(0, y - 1); ny <= Math.Min(height - 1, y + 1); ny++)
+                {
+                    for (var nx = Math.Max(0, x - 1); nx <= Math.Min(width - 1, x + 1); nx++)
+                    {
+                        var neighbor = (ny * width) + nx;
+                        if (visited[neighbor] || input[neighbor] <= 0f)
+                        {
+                            continue;
+                        }
+
+                        visited[neighbor] = true;
+                        stack.Push(neighbor);
+                    }
+                }
+            }
+
+            foreach (var index in component)
+            {
+                strengths[index] = strength;
+            }
+        }
+
+        return strengths;
+    }
+
     /// <summary>Felzenszwalb-Huttenlocher exact squared Euclidean distance transform, in place (0 marks sources).</summary>
     public static void SquaredDistanceTransform(float[] field, int width, int height)
     {

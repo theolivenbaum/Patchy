@@ -13,9 +13,11 @@ internal sealed record ShadowEffect(PsdBlendMode Mode, PsdColor Color, float Opa
 
 internal sealed record GlowEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float SpreadOrChoke, float Size, float Range, bool CenterSource, bool Precise, Gradient? Gradient);
 
-internal sealed record OverlayEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, Gradient? Gradient, PatternPlacement? Pattern = null);
+/// <summary>A color, gradient or pattern overlay; <paramref name="Dither"/> is the gradient's <c>Dthr</c> flag.</summary>
+internal sealed record OverlayEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, Gradient? Gradient, PatternPlacement? Pattern = null, bool Dither = false);
 
-internal sealed record StrokeEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float Size, StrokePosition Position, bool Overprint, Gradient? Gradient);
+/// <summary>A stroke (<c>FrFX</c>); <paramref name="Dither"/> is the gradient paint's <c>Dthr</c> flag.</summary>
+internal sealed record StrokeEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float Size, StrokePosition Position, bool Overprint, Gradient? Gradient, bool Dither = false);
 
 internal enum BevelStyle
 {
@@ -118,7 +120,8 @@ internal sealed class LayerEffects
                                 Mode(d, "scrn"), d.GetColor("Clr ") ?? new PsdColor(255, 255, 190), Percent(d, "Opct", 75),
                                 Math.Clamp((float)d.GetNumber("Ckmt", 0), 0, 100), Math.Max(0, (float)d.GetNumber("blur", 5)),
                                 Math.Clamp((float)d.GetNumber("Inpr", 100), 1, 100), d.GetEnum("glwS") == "SrcC",
-                                d.GetEnum("GlwT") == "PrBL", null); // gradient glows render with their solid color (TODO.md)
+                                d.GetEnum("GlwT") == "PrBL",
+                                null); // Gradient glows render with their solid color, as in the reference (docs/rendering.md).
                             (effect.Kind == "OrGl" ? effects.OuterGlows : effects.InnerGlows).Add(glow);
                             break;
                         }
@@ -134,7 +137,7 @@ internal sealed class LayerEffects
 
                         break;
                     case "GrFl":
-                        gradients.Add(new OverlayEffect(Mode(d, "norm"), PsdColor.Black, Percent(d, "Opct", 100), Gradient.FromDescriptor(d)));
+                        gradients.Add(new OverlayEffect(Mode(d, "norm"), PsdColor.Black, Percent(d, "Opct", 100), Gradient.FromDescriptor(d), Dither: d.GetBoolean("Dthr")));
                         break;
                     case "FrFX":
                         effects.Strokes.Add(new StrokeEffect(
@@ -142,7 +145,8 @@ internal sealed class LayerEffects
                             Math.Max(1, (float)d.GetNumber("Sz  ", 3)),
                             d.GetEnum("Styl") switch { "InsF" => StrokePosition.Inside, "CtrF" => StrokePosition.Center, _ => StrokePosition.Outside },
                             d.GetBoolean("overprint"),
-                            d.GetEnum("PntT") == "GrFl" ? Gradient.FromDescriptor(d) : null));
+                            d.GetEnum("PntT") == "GrFl" ? Gradient.FromDescriptor(d) : null,
+                            d.GetBoolean("Dthr")));
                         break;
                     case "ebbl":
                         {

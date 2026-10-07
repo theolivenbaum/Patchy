@@ -9,32 +9,48 @@ namespace XRay.Psd.Rendering;
 /// texture, then Lambert shading against the light with Photoshop's calibrated split
 /// (highlight = excess over the flat face, normalized to the headroom; shadow = deficit
 /// normalized to the floor; pillow and emboss shadows use the unnormalized deficit).
-/// Stroke Emboss is not rendered yet.
+/// Stroke Emboss runs the inner-bevel model on the union of the visible stroke
+/// bands instead of the layer matte.
 /// </summary>
 internal sealed partial class LayerCompositor
 {
+    /// <summary>
+    /// Bevels paint over the stroke bands; Stroke Emboss shades the rendered Stroke
+    /// effect itself, so it paints after every other bevel (reference
+    /// <c>composite_pixel_layer</c>, the <c>stroke_emboss</c> step).
+    /// </summary>
     private void RenderBevels(PlanarImage target, StyledLayer styled, MaskChain? masks, bool clipMode)
     {
-        foreach (var bevel in styled.Effects.Bevels)
+        foreach (var strokeEmboss in (ReadOnlySpan<bool>)[false, true])
         {
-            if (bevel.Style == BevelStyle.StrokeEmboss || (bevel.HighlightOpacity <= 0 && bevel.ShadowOpacity <= 0))
+            foreach (var bevel in styled.Effects.Bevels)
             {
-                continue;
-            }
+                if ((bevel.Style == BevelStyle.StrokeEmboss) != strokeEmboss || (bevel.HighlightOpacity <= 0 && bevel.ShadowOpacity <= 0))
+                {
+                    continue;
+                }
 
-            var (highlight, shadow) = BevelPlanes(styled, bevel);
-            DrawEffect(target, styled, new Plane(styled.Domain, highlight), bevel.HighlightOpacity * styled.Opacity, bevel.HighlightColor, bevel.HighlightMode, masks, clipMode, null);
-            DrawEffect(target, styled, new Plane(styled.Domain, shadow), bevel.ShadowOpacity * styled.Opacity, bevel.ShadowColor, bevel.ShadowMode, masks, clipMode, null);
+                // Stroke Emboss needs a visible stroke: without one it renders nothing.
+                var surface = strokeEmboss ? styled.StrokeEmbossMatte : styled.Matte;
+                if (surface is null)
+                {
+                    continue;
+                }
+
+                var (highlight, shadow) = BevelPlanes(styled, bevel, surface);
+                DrawEffect(target, styled, new Plane(styled.Domain, highlight), bevel.HighlightOpacity * styled.Opacity, bevel.HighlightColor, bevel.HighlightMode, masks, clipMode, null);
+                DrawEffect(target, styled, new Plane(styled.Domain, shadow), bevel.ShadowOpacity * styled.Opacity, bevel.ShadowColor, bevel.ShadowMode, masks, clipMode, null);
+            }
         }
     }
 
     private static int TentPeak(float size) => size <= 0 ? 0 : Math.Max(2, (int)MathF.Round(size, MidpointRounding.AwayFromZero));
 
-    private (float[] Highlight, float[] Shadow) BevelPlanes(StyledLayer styled, BevelEffect bevel)
+    /// <summary>Highlight and shadow planes over the domain for <paramref name="alpha"/>: the layer matte, or the stroke bands for Stroke Emboss.</summary>
+    private (float[] Highlight, float[] Shadow) BevelPlanes(StyledLayer styled, BevelEffect bevel, float[] alpha)
     {
         var width = styled.Domain.Width;
         var height = styled.Domain.Height;
-        var alpha = styled.Matte;
         var pillow = bevel.Style == BevelStyle.PillowEmboss;
         var pillowFamily = pillow || bevel.Style == BevelStyle.Emboss;
 
@@ -61,7 +77,7 @@ internal sealed partial class LayerCompositor
 
         if (bevel.Texture is { } texture && _document.Patterns.TryGetValue(texture.PatternId, out var tile))
         {
-            ApplyTexture(styled, bevel, texture, tile, heightField, width, height);
+            ApplyTexture(styled, bevel, texture, tile, alpha, heightField, width, height);
         }
 
         var angle = (180f - bevel.AngleDegrees) * MathF.PI / 180f;
@@ -85,7 +101,7 @@ internal sealed partial class LayerCompositor
                 var matte = Math.Clamp(alpha[index], 0f, 1f);
                 var effectAlpha = bevel.Style switch
                 {
-                    BevelStyle.InnerBevel => matte,
+                    BevelStyle.InnerBevel or BevelStyle.StrokeEmboss => matte,
                     BevelStyle.OuterBevel => 1f - matte,
                     _ => 1f,
                 };
@@ -221,7 +237,7 @@ internal sealed partial class LayerCompositor
     /// Texture embosses the face: pattern luminance (dark raised by default) is
     /// smoothed by a 3x3 box and added to the height field, weighted by the face.
     /// </summary>
-    private static void ApplyTexture(StyledLayer styled, BevelEffect bevel, PatternPlacement texture, PatternTile tile, float[] heightField, int width, int height)
+    private static void ApplyTexture(StyledLayer styled, BevelEffect bevel, PatternPlacement texture, PatternTile tile, float[] alpha, float[] heightField, int width, int height)
     {
         var sampler = new PatternSampler(tile, texture, styled.Layer);
         var bump = new float[heightField.Length];
@@ -240,7 +256,7 @@ internal sealed partial class LayerCompositor
         var faceFromMatte = bevel.Style is BevelStyle.InnerBevel or BevelStyle.StrokeEmboss;
         for (var i = 0; i < heightField.Length; i++)
         {
-            var coverage = faceFromMatte ? styled.Matte[i] : 1f - Math.Abs((Math.Clamp(heightField[i], 0f, 1f) * 2f) - 1f);
+            var coverage = faceFromMatte ? alpha[i] : 1f - Math.Abs((Math.Clamp(heightField[i], 0f, 1f) * 2f) - 1f);
             heightField[i] += bump[i] * bevel.TextureDepth * Math.Clamp(coverage, 0f, 1f);
         }
     }

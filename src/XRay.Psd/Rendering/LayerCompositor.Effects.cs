@@ -61,6 +61,9 @@ internal sealed partial class LayerCompositor
 
         /// <summary>Stroke planes drawn under the content (outer band share, where content is missing).</summary>
         public List<(StrokeEffect Stroke, Plane Under, EffectPaint? Paint)> StrokeUnderlays { get; } = [];
+
+        /// <summary>The union of the visible stroke bands over the domain, the surface a Stroke Emboss bevel shades.</summary>
+        public float[]? StrokeEmbossMatte { get; set; }
     }
 
     private LayerEffects? EffectsOf(PsdLayer layer)
@@ -112,6 +115,11 @@ internal sealed partial class LayerCompositor
         foreach (var g in fx.InnerGlows)
         {
             reach = Math.Max(reach, (int)MathF.Ceiling(g.Size) + 3);
+            if (g.Precise)
+            {
+                // The three box passes reach 1.5 x size (reference sample padding).
+                reach = Math.Max(reach, (EffectMasks.InteriorBlurRadius(g.Size) * 3) + (int)MathF.Ceiling(g.Size * g.SpreadOrChoke / 100f) + 3);
+            }
         }
 
         foreach (var s in fx.Satins)
@@ -119,9 +127,12 @@ internal sealed partial class LayerCompositor
             reach = Math.Max(reach, (int)MathF.Ceiling(s.Distance + s.Size) + 3);
         }
 
+        var strokeReach = fx.Strokes.Count == 0 ? 0 : fx.Strokes.Max(s => (int)MathF.Ceiling(s.Size) + 1);
         foreach (var b in fx.Bevels)
         {
-            reach = Math.Max(reach, (int)MathF.Ceiling(b.Size + b.Soften) + 4);
+            // Stroke Emboss shades the stroke band, so its surface starts past the stroke.
+            var start = b.Style == BevelStyle.StrokeEmboss ? strokeReach : 0;
+            reach = Math.Max(reach, (int)MathF.Ceiling(b.Size + b.Soften) + start + 4);
         }
 
         // Keep pathological descriptors (30000 px distances) bounded to the canvas scale.
@@ -211,8 +222,15 @@ internal sealed partial class LayerCompositor
             }
 
             var plane = (float[])styled.Matte.Clone();
-            EffectMasks.SoftExterior(plane, domain.Width, domain.Height, glow.Size, glow.SpreadOrChoke);
-            ApplyRange(plane, glow.Range, center: false);
+            if (glow.Precise)
+            {
+                EffectMasks.PreciseExterior(plane, domain.Width, domain.Height, glow.Size, glow.SpreadOrChoke);
+            }
+            else
+            {
+                EffectMasks.SoftExterior(plane, domain.Width, domain.Height, glow.Size, glow.SpreadOrChoke);
+                ApplyRange(plane, glow.Range, center: false);
+            }
             DrawEffect(target, styled, new Plane(domain, plane), glow.Opacity * styled.Opacity, glow.Color, glow.Mode, masks, clipMode,
                 (x, y) => ExteriorKnockout(styled.MatteAt(x, y), paintScale));
         }
@@ -233,8 +251,15 @@ internal sealed partial class LayerCompositor
             }
 
             var plane = (float[])styled.Matte.Clone();
-            EffectMasks.SoftInterior(plane, domain.Width, domain.Height, glow.Size, glow.SpreadOrChoke);
-            ApplyRange(plane, glow.Range, glow.CenterSource);
+            if (glow.Precise)
+            {
+                EffectMasks.PreciseInterior(plane, domain.Width, domain.Height, glow.Size, glow.SpreadOrChoke, glow.CenterSource);
+            }
+            else
+            {
+                EffectMasks.SoftInterior(plane, domain.Width, domain.Height, glow.Size, glow.SpreadOrChoke);
+                ApplyRange(plane, glow.Range, glow.CenterSource);
+            }
             DrawEffect(target, styled, new Plane(domain, plane), glow.Opacity * styled.Opacity, glow.Color, glow.Mode, masks, clipMode, Inside);
         }
 
@@ -279,6 +304,7 @@ internal sealed partial class LayerCompositor
         var needInside = fx.Strokes.Any(s => s.Position != StrokePosition.Outside);
         EffectMasks.StrokeDistanceFields(styled.Matte, width, height, needOutside, needInside, out var outside, out var inside);
         float[]? knockout = null;
+        var emboss = fx.Bevels.Any(b => b.Style == BevelStyle.StrokeEmboss);
         foreach (var stroke in fx.Strokes)
         {
             var bandOut = stroke.Position switch { StrokePosition.Inside => 0f, StrokePosition.Center => stroke.Size * 0.5f, _ => stroke.Size };
@@ -310,11 +336,58 @@ internal sealed partial class LayerCompositor
             var paint = StrokePaint(styled, stroke, bandOut, bandIn, outside, inside);
             styled.StrokePlanes.Add((stroke, new Plane(domain, over), paint));
             styled.StrokeUnderlays.Add((stroke, new Plane(domain, under), paint));
+            if (emboss && stroke.Opacity > 0)
+            {
+                styled.StrokeEmbossMatte ??= new float[styled.Matte.Length];
+                AccumulateStrokeEmbossMatte(styled, stroke, paint, bandOut, bandIn, outside, inside);
+            }
         }
 
         if (knockout is not null)
         {
             styled.Knockout = new Plane(domain, knockout);
+        }
+    }
+
+    /// <summary>
+    /// Adds one stroke to the Stroke Emboss surface: the band coverage
+    /// <c>a * inside + (1 - a) * outside</c> times the stroke opacity and gradient
+    /// opacity, united with the earlier strokes by screen. With "Layer Mask Hides
+    /// Effects" the mask hides the band where it lands (reference
+    /// <c>render_bevel_emboss</c>, the <c>stroke_emboss</c> branch).
+    /// </summary>
+    private static void AccumulateStrokeEmbossMatte(StyledLayer styled, StrokeEffect stroke, EffectPaint? paint, float bandOut, float bandIn, float[]? outside, float[]? inside)
+    {
+        var domain = styled.Domain;
+        var matte = styled.StrokeEmbossMatte!;
+        var maskRow = styled.Effects.MaskHidesEffects && styled.LayerMask is not null ? new float[domain.Width] : null;
+        for (var y = 0; y < domain.Height; y++)
+        {
+            if (maskRow is not null)
+            {
+                maskRow.AsSpan().Fill(1f);
+                styled.LayerMask!.MultiplyRow(domain.Top + y, domain.Left, maskRow);
+            }
+
+            for (var x = 0; x < domain.Width; x++)
+            {
+                var i = (y * domain.Width) + x;
+                var a = Math.Clamp(styled.Matte[i], 0f, 1f);
+                var outBand = bandOut > 0 && outside is not null ? Math.Clamp(bandOut + 1f - outside[i], 0f, 1f) : 0f;
+                var inBand = bandIn > 0 && inside is not null ? Math.Clamp(bandIn + 1f - inside[i], 0f, 1f) : 0f;
+                var alpha = Math.Clamp((a * inBand) + ((1f - a) * outBand), 0f, 1f) * stroke.Opacity;
+                if (alpha > 0 && paint is not null)
+                {
+                    alpha *= paint(domain.Left + x, domain.Top + y).A;
+                }
+
+                if (alpha > 0 && maskRow is not null)
+                {
+                    alpha *= maskRow[x];
+                }
+
+                matte[i] = alpha + (matte[i] * (1f - alpha));
+            }
         }
     }
 
@@ -561,10 +634,16 @@ internal sealed partial class LayerCompositor
         if (overlay.Gradient is { } gradient)
         {
             var placement = gradient.AlignWithLayer ? MatteBounds(styled) : styled.Source.Bounds;
+            var dither = overlay.Dither;
             return (x, y) =>
             {
                 var position = gradient.Position(placement, x, y, GradientSpan.LayerProjection);
                 var (r, g, b) = gradient.Color(position, endpointSmoothing: false);
+                if (dither)
+                {
+                    (r, g, b) = DitherGradientColor(r, g, b, x, y);
+                }
+
                 return (r, g, b, gradient.Opacity(position, endpointSmoothing: false));
             };
         }
@@ -625,7 +704,13 @@ internal sealed partial class LayerCompositor
                 var (r1, g1, b1) = gradient.Color(At(position), endpointSmoothing: true);
                 var (r2, g2, b2) = gradient.Color(At(position + step), endpointSmoothing: true);
                 var opacity = 0.25f * (gradient.Opacity(At(position - step), true) + (2f * gradient.Opacity(At(position), true)) + gradient.Opacity(At(position + step), true));
-                return ((r0 + (2f * r1) + r2) * 0.25f, (g0 + (2f * g1) + g2) * 0.25f, (b0 + (2f * b1) + b2) * 0.25f, opacity);
+                var (r, g, b) = ((r0 + (2f * r1) + r2) * 0.25f, (g0 + (2f * g1) + g2) * 0.25f, (b0 + (2f * b1) + b2) * 0.25f);
+                if (stroke.Dither)
+                {
+                    (r, g, b) = DitherGradientColor(r, g, b, x, y);
+                }
+
+                return (r, g, b, opacity);
             };
         }
 
@@ -634,8 +719,31 @@ internal sealed partial class LayerCompositor
         {
             var position = gradient.Position(bounds, x, y, GradientSpan.LayerProjection);
             var (r, g, b) = gradient.Color(position, endpointSmoothing: false);
+            if (stroke.Dither)
+            {
+                (r, g, b) = DitherGradientColor(r, g, b, x, y);
+            }
+
             return (r, g, b, gradient.Opacity(position, endpointSmoothing: false));
         };
+    }
+
+    /// <summary>
+    /// A dithered gradient (<c>Dthr</c>): the color rounds to bytes and moves by a
+    /// per-pixel offset in [-1, 2] from the top bits of the splitmix64 hash of the
+    /// document coordinate (reference <c>apply_gradient_dither</c>, blend_math.cpp).
+    /// </summary>
+    internal static (float R, float G, float B) DitherGradientColor(float r, float g, float b, int x, int y)
+    {
+        var hash = SplitMix64((ulong)(uint)x | ((ulong)(uint)y << 32));
+        var delta = (int)((hash >> 61) & 3) - 1;
+        return (DitherChannel(r, delta), DitherChannel(g, delta), DitherChannel(b, delta));
+    }
+
+    private static float DitherChannel(float value, int delta)
+    {
+        var level = (int)MathF.Round(Math.Clamp(value, 0f, 1f) * 255f, MidpointRounding.AwayFromZero);
+        return Math.Clamp(level + delta, 0, 255) / 255f;
     }
 
     /// <summary>
@@ -725,16 +833,20 @@ internal sealed partial class LayerCompositor
     /// <summary>Overlays and satin as destination passes over the matte (pass-through groups cannot fold them).</summary>
     private void RenderOverlayPasses(PlanarImage target, StyledLayer styled, MaskChain? masks, bool clipMode)
     {
+        // A stroke without Overprint knocks these passes out of its band as it does
+        // the content (reference render_*_overlay and the satin pass, StrokeKnockoutPlane).
         var matte = new Plane(styled.Domain, styled.Matte);
+        var knockout = styled.Knockout;
+        Func<int, int, float>? overlayFactor = knockout is null ? null : knockout.At;
         foreach (var overlay in styled.Effects.Overlays)
         {
-            DrawEffect(target, styled, matte, overlay.Opacity * styled.Opacity, overlay.Color, overlay.Mode, masks, clipMode, null, OverlayPaint(styled, overlay));
+            DrawEffect(target, styled, matte, overlay.Opacity * styled.Opacity, overlay.Color, overlay.Mode, masks, clipMode, overlayFactor, OverlayPaint(styled, overlay));
         }
 
         foreach (var satin in styled.Effects.Satins)
         {
             var plane = SatinPlane(styled, satin);
-            DrawEffect(target, styled, plane, satin.Opacity * styled.Opacity, satin.Color, satin.Mode, masks, clipMode, (x, y) => styled.MatteAt(x, y));
+            DrawEffect(target, styled, plane, satin.Opacity * styled.Opacity, satin.Color, satin.Mode, masks, clipMode, (x, y) => styled.MatteAt(x, y) * (knockout?.At(x, y) ?? 1f));
         }
     }
 

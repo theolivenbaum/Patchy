@@ -16,6 +16,7 @@ Where each part of the C# library came from in the reference tree (`.reference/`
 | `Rendering/BlendOps.cs` | `src/core/blend_math.cpp` | Float versions of the 8-bit kernels, including Photoshop's Linear Light (-256) and Pin Light offsets and the Burn/Dodge/Divide 0/0 corners. |
 | `Rendering/BlendKernels.cs` | `composite_blended_rgb`, `IsolatedClipGroupTarget` | Clip mode reproduces the frozen clip-group semantics without Blend If. |
 | `Rendering/LayerCompositor.cs` | `src/render/layer_compositor.hpp` (`composite_sibling_layers`, `composite_layer`, `composite_pass_through_group`) | Effects live in `LayerCompositor.Effects.cs` and `.Bevel.cs` (from `render_*` and `layer_style_mask_ops.cpp`). No Blend If, channel restrictions or special Fill yet. |
+| `Rendering/EffectMasks.cs` | `src/render/layer_style_mask_ops.cpp` | Spread and choke dilation, the tent blur, stroke distance fields, and the Precise glow falloffs (chamfer distance with component strengths, triple box). Effect gradient dither (`apply_gradient_dither`) lives in `LayerCompositor.Effects.cs`. |
 | `Rendering/Patterns.cs` | `src/psd/psd_patterns.cpp`, `src/core/pattern_sampler.hpp` | Same sampling rules: nearest at 100%, linear above, box below. |
 | `Rendering/Gradient.cs` | `gradient_position`, `gradient_color` in `src/core/blend_math.cpp` | No noise gradients or dither. |
 | `Rendering/MaskSampler.cs` | `src/core/layer_render_utils.cpp` (`mask_feather_box_radii`) | Density lifts the floor: `m * d + (1 - d)`. |
