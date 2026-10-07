@@ -12,6 +12,7 @@ It is a port of the PSD engine in Patchy, a C++ image editor whose source is kep
 - Rendering from the merged image Photoshop saved, or from the layers with a compositor that follows Photoshop's blending rules.
 - Built-in PNG and JPEG encoders. The optional `XRay.Psd.Skia` package adds `SKBitmap` interop and Skia encoders such as WebP.
 - Text extraction: layer and group names, type-layer content with fonts and style runs, channel and path names, slices, XMP and IPTC metadata, and text inside embedded PSD/PSB smart objects.
+- Optional type-layer re-rendering (`XRay.Psd.Text`, SkiaSharp and HarfBuzz): draws type layers from their text, for files that store no text pixels or when the text should be redrawn with other fonts. It follows Photoshop's layout model for point, box and vertical text, leading, tracking, glyph scales, alignment, transforms and Warp Text. See `docs/text-rendering.md`.
 
 The layer compositor renders layer effects (shadows, glows, overlays, satin, strokes, bevel and emboss), adjustment layers (Levels, Curves, Hue/Saturation, Brightness/Contrast, Exposure, Invert, Threshold, Posterize) and solid, gradient and pattern fills. Not rendered from layers yet: vector strokes on shape layers, Blend If, some adjustments (Color Balance, Vibrance, Black and White, Channel Mixer, Selective Color, Gradient Map, Photo Filter). Documents saved with "Maximize Compatibility" render exactly through the merged image. See `TODO.md`.
 
@@ -51,6 +52,35 @@ foreach (var layer in document.EnumerateLayersTopDown())
     layer.GetPixels()?.SavePng($"{layer.Index}.png"); // the layer's own pixels, no masks
 }
 ```
+
+Re-rendering type layers with the optional `XRay.Psd.Text` package:
+
+```csharp
+using XRay.Psd.Text;
+
+var fonts = new FontCollection();
+fonts.AddFile("fonts/LiberationSans-Regular.ttf"); // ArialMT resolves to it through the metric-compatible aliases
+
+using var rasterizer = new TextLayerRasterizer(new TextRenderSettings
+{
+    FontResolver = new CompositeFontResolver(fonts, SystemFontResolver.Default),
+});
+
+// Type layers without stored pixels are drawn from their text; Always redraws every type layer.
+document.Render(new RenderOptions { TextRasterizer = rasterizer }).SavePng("filled-in.png");
+document.Render(new RenderOptions { TextRasterizer = rasterizer, TextRasterMode = TextRasterMode.Always }).SavePng("redrawn.png");
+
+// Fonts the resolver cannot find (those runs use the fallback face).
+foreach (var layer in document.EnumerateLayersTopDown())
+{
+    if (layer.Text is { } text && rasterizer.Renderer.FindMissingFonts(text) is { Count: > 0 } missing)
+    {
+        Console.WriteLine($"{layer.Path}: missing {string.Join(", ", missing)}");
+    }
+}
+```
+
+The package needs the Skia and HarfBuzz native assets for the platform (for example `SkiaSharp.NativeAssets.Linux` and `HarfBuzzSharp.NativeAssets.Linux`).
 
 Command line:
 

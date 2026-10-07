@@ -9,7 +9,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 - Read PSD (version 1) and PSB (version 2) files: header, color mode data, image resources, layer tree, masks, vector masks, tagged blocks, linked/embedded files, merged image.
 - Render a document to 8-bit sRGB RGBA and save it as PNG or JPEG.
 - Extract all text: layer and group names, type-layer content with style runs and fonts, channel names, path names, slices, XMP/IPTC metadata, and text inside embedded PSD/PSB smart objects.
-- Keep the core library dependency-free. SkiaSharp lives only in the optional `XRay.Psd.Skia` package; HarfBuzz is not used yet (see TODO.md for when it would be).
+- Keep the core library dependency-free. SkiaSharp lives only in the optional `XRay.Psd.Skia` and `XRay.Psd.Text` packages; HarfBuzz only in `XRay.Psd.Text`, which re-renders type layers from the text model through the core's `ITextLayerRasterizer` hook.
 
 ## Layout
 
@@ -25,13 +25,16 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/XRay.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Bevel.cs`, `.Strokes.cs`, `.Blending.cs`), SIMD `BlendKernels`/`BlendOps`, `BlendIf`, `SpecialFill`, `MaskSampler`, `PathRasterizer`, `VectorStroker`, `EffectMasks`, `LayerEffects`, `Gradient`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
 | `src/XRay.Psd/Codecs/` | Built-in `PngEncoder` and baseline `JpegEncoder` |
 | `src/XRay.Psd.Skia/` | Optional SkiaSharp interop (SKBitmap/SKImage, Skia encoders such as WebP) |
+| `src/XRay.Psd.Text/` | Optional type-layer re-rendering (SkiaSharp + HarfBuzz): `IFontResolver` (`FontCollection`, `SystemFontResolver`, aliases), `TextLayoutEngine`, `TextWarpMesh`, `TextLayerRenderer`, `TextLayerRasterizer`; see `docs/text-rendering.md` |
 | `tools/XRay.Psd.Cli/` | `psdtool info|text|render|layers` for inspection and manual checks |
 | `tests/XRay.Psd.Tests/` | xUnit v3 tests; `Support/PsdBuilder.cs` writes synthetic PSD/PSB files |
 | `tests/XRay.Psd.Skia.Tests/` | Skia interop tests; also decodes the built-in PNG/JPEG output with Skia |
+| `tests/XRay.Psd.Text.Tests/` | Text re-rendering tests against the type fixtures; bundles Liberation Sans (OFL) in `Fonts/`, never uses system fonts |
 | `tests/fixtures/psd/` | Committed PSD/PSB fixtures and Photoshop reference renders (`.bmp`) copied from `.reference/test-fixtures/psd` |
 | `docs/porting-map.md` | Which reference files each C# area came from, and what was deliberately left out |
 | `docs/rendering.md` | Compositor model, effect pipeline, calibration status |
 | `docs/text.md` | Text model: TySh, `Txt2`, PS 5 `tySh`, gap filling and extraction |
+| `docs/text-rendering.md` | Type-layer re-rendering: core hook, font resolution, Photoshop layout model, validation metrics |
 | `docs/color.md` | ICC color management: what converts, Little CMS parity, accuracy |
 
 ## Commands
@@ -46,10 +49,12 @@ dotnet run --project tools/XRay.Psd.Cli -c Release -- info tests/fixtures/psd/ar
 
 The survey writes `test-output/survey.txt` (layer compositor vs merged image vs Photoshop BMP for every fixture) plus `*.layers.png`/`*.merged.png`. Run it before and after any rendering change and compare. `test-output/` is gitignored.
 
+`XRAY_PSD_TEXT_SURVEY=1 dotnet test --project tests/XRay.Psd.Text.Tests -c Release` writes `test-output/text-survey.txt`: every type layer re-rendered by `XRay.Psd.Text` and compared with its stored pixels. Run it before and after any change under `src/XRay.Psd.Text/`.
+
 ## Rules
 
 - Never modify `.reference/`. It is the record of the calibrated C++ behavior. When a rendering rule is unclear, find it there (start with `.reference/src/render/layer_compositor.hpp`, `.reference/src/core/blend_math.cpp`, `.reference/docs/blend-modes.md`, `.reference/docs/ps-compat.md`) and cite the source in a code comment.
-- The core library takes no NuGet dependencies. System.IO.Compression (zlib) and System.Xml are in the BCL and allowed. Anything that needs SkiaSharp or HarfBuzz goes in a separate package.
+- The core library takes no NuGet dependencies. System.IO.Compression (zlib) and System.Xml are in the BCL and allowed. Anything that needs SkiaSharp or HarfBuzz goes in a separate package. Optional packages pin the same SkiaSharp version.
 - Zero build warnings across the solution. Fix the cause; scope any suppression to one line.
 - Untrusted input: every length, count and offset from a file goes through `BigEndianReader` or an explicit check. Malformed input must throw `PsdFormatException` or degrade (skip the block, zero the damaged rows); any other exception type escaping `PsdDocument.Load`, `Render` or `ExtractText` is a bug. `ParsingTests.Every_fixture_survives_truncation` guards this.
 - Pixel data stays compressed until rendering asks for it (`PsdLayer.DecodePixels`). Text extraction and inspection must not decode pixels.

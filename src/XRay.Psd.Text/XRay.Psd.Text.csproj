@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>XRay.Psd.Text</RootNamespace>
+    <Description>Type-layer re-rendering for XRay.Psd: lays out PSD text from the parsed model (runs, paragraphs, leading, tracking, alignment, transform, point, box and vertical text) with HarfBuzz shaping and SkiaSharp glyph rasterization.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="4.153.1" />
+    <PackageReference Include="SkiaSharp.HarfBuzz" Version="4.153.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../XRay.Psd/XRay.Psd.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="XRay.Psd.Text.Tests" />
+  </ItemGroup>
+</Project>

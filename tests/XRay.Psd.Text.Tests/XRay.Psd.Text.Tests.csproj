@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);CA1707;CA1515;CA1861</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.1" />
+    <!-- Native Skia and HarfBuzz for the test host; applications pick their own platform assets. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.153.1" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.301" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/XRay.Psd.Text/XRay.Psd.Text.csproj" />
+    <Compile Include="../XRay.Psd.Tests/Support/Fixtures.cs" Link="Support/Fixtures.cs" />
+    <Compile Include="../XRay.Psd.Tests/Support/PsdBuilder.cs" Link="Support/PsdBuilder.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Liberation Sans (SIL Open Font License 1.1, see Fonts/LiberationSans-OFL.txt), metric-compatible with Arial. -->
+    <None Include="Fonts/*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
