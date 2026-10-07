@@ -364,7 +364,71 @@ internal sealed partial class LayerCompositor
             pixels.Fill(color.R / 255f, color.G / 255f, color.B / 255f, 1f);
         }
 
+        else if (layer.Kind == PsdLayerKind.Fill && layer.ContentKey == "PtFl" && layer.FillDescriptor is { } patternFill && (pixels is null || IsEmptyCoverage(pixels)))
+        {
+            pixels = PatternFillPixels(layer, patternFill);
+        }
+        else if (layer.Kind == PsdLayerKind.Fill && layer.ContentKey == "GdFl" && layer.FillDescriptor is { } gradientFill && (pixels is null || IsEmptyCoverage(pixels)))
+        {
+            pixels = GradientFillPixels(layer, gradientFill);
+        }
+
         _pixelCache[layer] = pixels;
+        return pixels;
+    }
+
+    /// <summary>
+    /// Gradient fill layers span the center chord of their shape's bounds when
+    /// aligned (the canvas otherwise), with Photoshop's eased two-stop ramp
+    /// (reference <c>vector_raster.cpp</c>, GdFl branch). The vector mask shapes it later.
+    /// </summary>
+    private PlanarImage? GradientFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor)
+    {
+        var gradient = Gradient.FromDescriptor(descriptor);
+        if (gradient is null)
+        {
+            return null;
+        }
+
+        var shape = layer.VectorMask is { Subpaths.Count: > 0 } path ? path.Bounds.Intersect(_canvas) : _canvas;
+        var placement = gradient.AlignWithLayer && !shape.IsEmpty ? shape : _canvas;
+        var pixels = new PlanarImage(_canvas);
+        for (var y = _canvas.Top; y < _canvas.Bottom; y++)
+        {
+            for (var x = _canvas.Left; x < _canvas.Right; x++)
+            {
+                var position = gradient.Position(placement, x, y, GradientSpan.CenterChord);
+                var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
+                var i = pixels.RowOffset(y, x);
+                pixels.R[i] = r;
+                pixels.G[i] = g;
+                pixels.B[i] = b;
+                pixels.A[i] = gradient.Opacity(position, endpointSmoothing: true);
+            }
+        }
+
+        return pixels;
+    }
+
+    /// <summary>Pattern fill layers tile their pattern over the canvas; the vector mask shapes it later.</summary>
+    private PlanarImage? PatternFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor)
+    {
+        if (PatternPlacement.FromDescriptor(descriptor) is not { } placement || !_document.Patterns.TryGetValue(placement.PatternId, out var tile))
+        {
+            return null;
+        }
+
+        var sampler = new PatternSampler(tile, placement, layer);
+        var pixels = new PlanarImage(_canvas);
+        for (var y = _canvas.Top; y < _canvas.Bottom; y++)
+        {
+            for (var x = _canvas.Left; x < _canvas.Right; x++)
+            {
+                var i = pixels.RowOffset(y, x);
+                (pixels.R[i], pixels.G[i], pixels.B[i], pixels.A[i]) = sampler.Sample(x, y);
+            }
+        }
+
         return pixels;
     }
 

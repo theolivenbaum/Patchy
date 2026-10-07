@@ -321,7 +321,8 @@ internal static class EffectMasks
         }
     }
 
-    private static float[] DistanceField(float[] contour, int width, int height, bool sourcesArePainted)
+    /// <summary>Euclidean distance from each pixel to the nearest painted (value &gt; 0) or unpainted pixel.</summary>
+    public static float[] DistanceField(float[] contour, int width, int height, bool sourcesArePainted)
     {
         var field = new float[contour.Length];
         for (var i = 0; i < contour.Length; i++)
@@ -336,5 +337,110 @@ internal static class EffectMasks
         }
 
         return field;
+    }
+
+    /// <summary>Count-normalized running box blur, edge-truncated (reference <c>box_blur_mask_into</c>), repeated <paramref name="passes"/> times.</summary>
+    public static void BoxBlur(float[] mask, int width, int height, int radius, int passes)
+    {
+        if (radius <= 0 || passes <= 0)
+        {
+            return;
+        }
+
+        var horizontal = new float[mask.Length];
+        for (var pass = 0; pass < passes; pass++)
+        {
+            BoxPass(mask, horizontal, width, height, radius);
+        }
+    }
+
+    /// <summary>The layer-style falloff blur: up to three box passes splitting ceil(size) (reference <c>blur_layer_style_mask_in_place</c>).</summary>
+    public static void LayerStyleBlur(float[] mask, int width, int height, float size)
+    {
+        var support = Math.Max(0, (int)MathF.Ceiling(Math.Max(0f, size)));
+        if (support <= 0)
+        {
+            return;
+        }
+
+        var passes = Math.Min(3, support);
+        var baseRadius = support / passes;
+        var extra = support % passes;
+        var horizontal = new float[mask.Length];
+        for (var pass = 0; pass < passes; pass++)
+        {
+            var radius = baseRadius + (pass < extra ? 1 : 0);
+            if (radius > 0)
+            {
+                BoxPass(mask, horizontal, width, height, radius);
+            }
+        }
+    }
+
+    private static void BoxPass(float[] mask, float[] horizontal, int width, int height, int radius)
+    {
+        for (var y = 0; y < height; y++)
+        {
+            var sum = 0f;
+            var count = 0;
+            for (var x = -radius; x <= radius; x++)
+            {
+                if (x >= 0 && x < width)
+                {
+                    sum += mask[(y * width) + x];
+                    count++;
+                }
+            }
+
+            for (var x = 0; x < width; x++)
+            {
+                horizontal[(y * width) + x] = sum / Math.Max(1, count);
+                var remove = x - radius;
+                var add = x + radius + 1;
+                if (remove >= 0 && remove < width)
+                {
+                    sum -= mask[(y * width) + remove];
+                    count--;
+                }
+
+                if (add >= 0 && add < width)
+                {
+                    sum += mask[(y * width) + add];
+                    count++;
+                }
+            }
+        }
+
+        for (var x = 0; x < width; x++)
+        {
+            var sum = 0f;
+            var count = 0;
+            for (var y = -radius; y <= radius; y++)
+            {
+                if (y >= 0 && y < height)
+                {
+                    sum += horizontal[(y * width) + x];
+                    count++;
+                }
+            }
+
+            for (var y = 0; y < height; y++)
+            {
+                mask[(y * width) + x] = sum / Math.Max(1, count);
+                var remove = y - radius;
+                var add = y + radius + 1;
+                if (remove >= 0 && remove < height)
+                {
+                    sum -= horizontal[(remove * width) + x];
+                    count--;
+                }
+
+                if (add >= 0 && add < height)
+                {
+                    sum += horizontal[(add * width) + x];
+                    count++;
+                }
+            }
+        }
     }
 }

@@ -65,6 +65,21 @@ public sealed class RenderingTests
     [InlineData("photoshop-stroke-shapeburst.psd", 125, 0.1)]
     [InlineData("photoshop-stroke-aa-matte.psd", 90, 0.4)]
     [InlineData("photoshop-clip-base-effects.psd", 130, 1.2)]
+
+    // Patterns (overlay effect and fill layers), gradient fill layers, bevel and emboss.
+    [InlineData("photoshop-pattern-overlay.psd", 1, 0.01)]
+    [InlineData("photoshop-pattern-anchor.psd", 1, 0.01)]
+    [InlineData("photoshop-pattern-transparent.psd", 1, 0.01)]
+    [InlineData("photoshop-pattern-scale.psd", 34, 2.0)]
+    [InlineData("photoshop-shape-pattern.psd", 8, 0.1)]
+    [InlineData("photoshop-shape-gradient.psd", 10, 1.3)]
+    [InlineData("photoshop-bevel-smooth.psd", 4, 0.05)]
+    [InlineData("photoshop-emboss-styles.psd", 30, 0.15)]
+    [InlineData("photoshop-pillow-emboss.psd", 75, 0.1)]
+    [InlineData("photoshop-pillow-emboss2.psd", 70, 0.12)]
+    [InlineData("photoshop-bevel-texture-ramp.psd", 30, 0.5)]
+    [InlineData("photoshop-bevel-texture-clouds.psd", 96, 1.3)]
+    [InlineData("photoshop-gloss-contour.psd", 192, 0.9)]
     public void Layer_compositor_matches_photoshop_capture(string name, int maxDelta, double meanDelta)
     {
         var document = Fixtures.Load(name);
@@ -72,6 +87,22 @@ public sealed class RenderingTests
 
         var rendered = document.Render(new RenderOptions { Source = RenderSource.Layers });
         var diff = ImageTools.Compare(rendered, reference);
+
+        Assert.True(diff.MaxDelta <= maxDelta && diff.MeanDelta <= meanDelta, $"{name}: {diff}");
+    }
+
+    /// <summary>Fixtures without a capture whose real merged image the compositor reproduces.</summary>
+    [Theory]
+    [InlineData("photoshop-pattern-deep.psd", 1, 0.01)]
+    [InlineData("patchy-gradient-empty-transparency.psd", 1, 0.01)]
+    [InlineData("photoshop-bevel-default.psd", 3, 0.1)]
+    [InlineData("arrows.psd", 120, 0.4)]
+    public void Layer_compositor_matches_real_merged_image(string name, int maxDelta, double meanDelta)
+    {
+        var document = Fixtures.Load(name);
+        Assert.True(document.HasRealMergedImage);
+
+        var diff = ImageTools.Compare(document.Render(new RenderOptions { Source = RenderSource.Layers }), document.GetMergedImage());
 
         Assert.True(diff.MaxDelta <= maxDelta && diff.MeanDelta <= meanDelta, $"{name}: {diff}");
     }

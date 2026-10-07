@@ -91,6 +91,11 @@ public sealed class PsdDocument
     /// <summary>Raw global layer mask info.</summary>
     public ReadOnlyMemory<byte> GlobalLayerMaskInfo { get; internal set; }
 
+    private Dictionary<string, Rendering.PatternTile>? _patterns;
+
+    /// <summary>Decoded pattern tiles from the global pattern blocks, keyed by pattern ID (decoded on first use).</summary>
+    internal Dictionary<string, Rendering.PatternTile> Patterns => _patterns ??= Rendering.PatternStore.Parse(this);
+
     internal void AddLayer(PsdLayer layer) => _layers.Add(layer);
 
     internal void AddRootLayer(PsdLayer layer) => _rootLayers.Add(layer);

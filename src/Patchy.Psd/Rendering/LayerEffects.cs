@@ -13,17 +13,41 @@ internal sealed record ShadowEffect(PsdBlendMode Mode, PsdColor Color, float Opa
 
 internal sealed record GlowEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float SpreadOrChoke, float Size, float Range, bool CenterSource, bool Precise, Gradient? Gradient);
 
-internal sealed record OverlayEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, Gradient? Gradient);
+internal sealed record OverlayEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, Gradient? Gradient, PatternPlacement? Pattern = null);
 
 internal sealed record StrokeEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float Size, StrokePosition Position, bool Overprint, Gradient? Gradient);
+
+internal enum BevelStyle
+{
+    InnerBevel,
+    OuterBevel,
+    Emboss,
+    PillowEmboss,
+    StrokeEmboss,
+}
+
+internal enum BevelTechnique
+{
+    Smooth,
+    ChiselHard,
+    ChiselSoft,
+}
+
+internal sealed record BevelEffect(
+    PsdBlendMode HighlightMode, PsdColor HighlightColor, float HighlightOpacity,
+    PsdBlendMode ShadowMode, PsdColor ShadowColor, float ShadowOpacity,
+    float AngleDegrees, float AltitudeDegrees, float Depth, float Size, bool DirectionUp,
+    BevelStyle Style, BevelTechnique Technique, float Soften,
+    StyleContour Gloss, bool GlossAntiAliased,
+    StyleContour? Contour, bool ContourAntiAliased, float ContourRange,
+    PatternPlacement? Texture, bool TextureInvert, float TextureDepth);
 
 internal sealed record SatinEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float AngleDegrees, float Distance, float Size, bool Invert);
 
 /// <summary>
 /// The enabled layer effects of one layer, parsed from its <c>lfx2</c>/<c>lmfx</c>
 /// descriptor with the defaults and clamps of the reference
-/// (.reference/src/psd/psd_layer_styles.cpp). Bevel and emboss and pattern
-/// overlays are recognized but not rendered (see TODO.md).
+/// (.reference/src/psd/psd_layer_styles.cpp).
 /// </summary>
 internal sealed class LayerEffects
 {
@@ -42,14 +66,16 @@ internal sealed class LayerEffects
 
     public List<SatinEffect> Satins { get; } = [];
 
+    public List<BevelEffect> Bevels { get; } = [];
+
     /// <summary>"Layer Mask Hides Effects" (<c>lmgm</c>) or "Vector Mask Hides Effects" (<c>vmgm</c>).</summary>
     public bool MaskHidesEffects { get; set; }
 
     public bool HasExterior => DropShadows.Count > 0 || OuterGlows.Count > 0;
 
-    public bool IsEmpty => DropShadows.Count == 0 && InnerShadows.Count == 0 && OuterGlows.Count == 0 && InnerGlows.Count == 0 && Overlays.Count == 0 && Strokes.Count == 0 && Satins.Count == 0;
+    public bool IsEmpty => DropShadows.Count == 0 && InnerShadows.Count == 0 && OuterGlows.Count == 0 && InnerGlows.Count == 0 && Overlays.Count == 0 && Strokes.Count == 0 && Satins.Count == 0 && Bevels.Count == 0;
 
-    public static LayerEffects? Parse(Descriptor root, float globalAngle)
+    public static LayerEffects? Parse(Descriptor root, float globalAngle, float globalAltitude = 30f)
     {
         if (!root.GetBoolean("masterFXSwitch", true))
         {
@@ -57,6 +83,7 @@ internal sealed class LayerEffects
         }
 
         var effects = new LayerEffects();
+        var patterns = new List<OverlayEffect>();
         var gradients = new List<OverlayEffect>();
         var colors = new List<OverlayEffect>();
         foreach (var (key, value) in root.Items)
@@ -99,6 +126,13 @@ internal sealed class LayerEffects
                     case "SoFi":
                         colors.Add(new OverlayEffect(Mode(d, "norm"), d.GetColor("Clr ") ?? new PsdColor(255, 0, 0), Percent(d, "Opct", 100), null));
                         break;
+                    case "patternFill":
+                        if (PatternPlacement.FromDescriptor(d) is { } placement)
+                        {
+                            patterns.Add(new OverlayEffect(Mode(d, "norm"), PsdColor.Black, Percent(d, "Opct", 100), null, placement));
+                        }
+
+                        break;
                     case "GrFl":
                         gradients.Add(new OverlayEffect(Mode(d, "norm"), PsdColor.Black, Percent(d, "Opct", 100), Gradient.FromDescriptor(d)));
                         break;
@@ -110,6 +144,54 @@ internal sealed class LayerEffects
                             d.GetBoolean("overprint"),
                             d.GetEnum("PntT") == "GrFl" ? Gradient.FromDescriptor(d) : null));
                         break;
+                    case "ebbl":
+                        {
+                            var global = d.GetBoolean("uglg");
+                            var style = d.GetEnum("bvlS") switch
+                            {
+                                "OtrB" => BevelStyle.OuterBevel,
+                                "Embs" => BevelStyle.Emboss,
+                                "PlEb" => BevelStyle.PillowEmboss,
+                                "strokeEmboss" => BevelStyle.StrokeEmboss,
+                                _ => BevelStyle.InnerBevel,
+                            };
+                            var technique = d.GetEnum("bvlT") switch
+                            {
+                                "PrBL" => BevelTechnique.ChiselHard,
+                                "Slmt" => BevelTechnique.ChiselSoft,
+                                _ => BevelTechnique.Smooth,
+                            };
+                            var useContour = d.GetBoolean("useShape");
+                            var useTexture = d.GetBoolean("useTexture");
+                            PatternPlacement? texture = null;
+                            if (useTexture && PatternPlacement.FromDescriptor(d) is { } texturePlacement)
+                            {
+                                // Texture has no angle; its scale and phase follow the effect keys.
+                                texture = texturePlacement with { AngleDegrees = 0 };
+                            }
+
+                            effects.Bevels.Add(new BevelEffect(
+                                Mode(d, "hglM", "scrn"), d.GetColor("hglC") ?? PsdColor.White, Percent(d, "hglO", 75),
+                                Mode(d, "sdwM", "mul "), d.GetColor("sdwC") ?? PsdColor.Black, Percent(d, "sdwO", 75),
+                                global ? globalAngle : (float)d.GetNumber("lagl", 120),
+                                global ? globalAltitude : (float)d.GetNumber("Lald", 30),
+                                Math.Max(0.01f, (float)(d.GetNumber("srgR", 100) / 100)),
+                                Math.Max(1f, (float)d.GetNumber("blur", 5)),
+                                d.GetEnum("bvlD") != "Out ",
+                                style,
+                                technique,
+                                Math.Max(0f, (float)d.GetNumber("Sftn", 0)),
+                                StyleContour.FromDescriptor(d.GetObject("TrnS")),
+                                d.GetBoolean("antialiasGloss"),
+                                useContour ? StyleContour.FromDescriptor(d.GetObject("MpgS")) : null,
+                                d.GetBoolean("AntA"),
+                                Math.Clamp((float)(d.GetNumber("Inpr", 50) / 100), 0f, 1f),
+                                texture,
+                                d.GetBoolean("InvT"),
+                                Math.Clamp((float)(d.GetNumber("textureDepth", 100) / 100), -10f, 10f)));
+                            break;
+                        }
+
                     case "ChFX":
                         effects.Satins.Add(new SatinEffect(
                             Mode(d, "mul "), d.GetColor("Clr ") ?? PsdColor.Black, Percent(d, "Opct", 50),
@@ -120,6 +202,7 @@ internal sealed class LayerEffects
             }
         }
 
+        effects.Overlays.AddRange(patterns);
         effects.Overlays.AddRange(gradients);
         effects.Overlays.AddRange(colors);
         return effects.IsEmpty ? null : effects;
@@ -137,6 +220,8 @@ internal sealed class LayerEffects
             "gradientFillMulti" => "GrFl",
             "frameFXMulti" => "FrFX",
             "chromeFXMulti" => "ChFX",
+            "patternFillMulti" => "patternFill",
+            "bevelEmbossMulti" => "ebbl",
             _ => key,
         };
         if (value.Type == DescriptorValueType.List && value.List is not null)
@@ -155,9 +240,11 @@ internal sealed class LayerEffects
         }
     }
 
-    private static PsdBlendMode Mode(Descriptor d, string fallback)
+    private static PsdBlendMode Mode(Descriptor d, string fallback) => Mode(d, "Md  ", fallback);
+
+    private static PsdBlendMode Mode(Descriptor d, string key, string fallback)
     {
-        var mode = d.GetEnum("Md  ");
+        var mode = d.GetEnum(key);
         return mode is null ? BlendModeKeys.FromKey(fallback) : BlendModeKeys.FromDescriptorEnum(mode);
     }
 

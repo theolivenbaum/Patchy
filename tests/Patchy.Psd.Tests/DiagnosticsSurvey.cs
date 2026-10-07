@@ -47,6 +47,7 @@ public sealed class DiagnosticsSurvey(ITestOutputHelper output)
             }
         }
 
-        File.WriteAllLines(Path.Combine(Fixtures.RootDirectory, "..", "..", "..", "test-output", "survey.txt"), lines);
+        var path = Environment.GetEnvironmentVariable("PATCHY_PSD_SURVEY_OUT") ?? Path.Combine(Fixtures.RootDirectory, "..", "..", "..", "test-output", "survey.txt");
+        File.WriteAllLines(path, lines);
     }
 }

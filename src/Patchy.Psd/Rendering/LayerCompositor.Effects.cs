@@ -73,7 +73,7 @@ internal sealed partial class LayerCompositor
         LayerEffects? effects = null;
         if (layer.Effects is { } descriptor && layer.EffectsVisible)
         {
-            effects = LayerEffects.Parse(descriptor, _document.GlobalLightAngle);
+            effects = LayerEffects.Parse(descriptor, _document.GlobalLightAngle, _document.GlobalLightAltitude);
             if (effects is not null)
             {
                 var hides = layer.GetTaggedBlock("lmgm") is { Data.Length: > 0 } lmgm && lmgm.Data.Span[0] != 0;
@@ -117,6 +117,11 @@ internal sealed partial class LayerCompositor
         foreach (var s in fx.Satins)
         {
             reach = Math.Max(reach, (int)MathF.Ceiling(s.Distance + s.Size) + 3);
+        }
+
+        foreach (var b in fx.Bevels)
+        {
+            reach = Math.Max(reach, (int)MathF.Ceiling(b.Size + b.Soften) + 4);
         }
 
         // Keep pathological descriptors (30000 px distances) bounded to the canvas scale.
@@ -241,6 +246,8 @@ internal sealed partial class LayerCompositor
         {
             DrawEffect(target, styled, over, stroke.Opacity * styled.Opacity, stroke.Color, stroke.Mode, masks, clipMode, null, paint);
         }
+
+        RenderBevels(target, styled, masks, clipMode);
     }
 
     /// <summary>
@@ -332,6 +339,7 @@ internal sealed partial class LayerCompositor
         }
 
         var overlays = fold ? fx.Overlays : [];
+        var overlayPaints = overlays.Select(o => OverlayPaint(styled, o)).ToList();
 
         var gradientBounds = MatteBounds(styled);
         var width = region.Width;
@@ -354,25 +362,25 @@ internal sealed partial class LayerCompositor
             source.B.AsSpan(s, width).CopyTo(b);
 
             // Interior overlays fold into the layer's straight color: gradient under color, then satin.
-            foreach (var overlay in overlays)
+            for (var o = 0; o < overlays.Count; o++)
             {
+                var overlay = overlays[o];
+                var paint = overlayPaints[o];
                 for (var i = 0; i < width; i++)
                 {
-                    var opacity = overlay.Opacity;
-                    if (overlay.Gradient is { } gradient)
-                    {
-                        var position = gradient.Position(gradient.AlignWithLayer ? gradientBounds : source.Bounds, region.Left + i, y, GradientSpan.LayerProjection);
-                        (er[i], eg[i], eb[i]) = gradient.Color(position, endpointSmoothing: false);
-                        opacity *= gradient.Opacity(position, endpointSmoothing: false);
-                    }
-                    else
+                    if (paint is null)
                     {
                         er[i] = overlay.Color.R / 255f;
                         eg[i] = overlay.Color.G / 255f;
                         eb[i] = overlay.Color.B / 255f;
+                        ea[i] = overlay.Opacity;
                     }
-
-                    ea[i] = opacity;
+                    else
+                    {
+                        float factor;
+                        (er[i], eg[i], eb[i], factor) = paint(region.Left + i, y);
+                        ea[i] = overlay.Opacity * factor;
+                    }
                 }
 
                 FoldInto(overlay.Mode, er, eg, eb, ea, r, g, b, ones, region.Left, y);
@@ -546,6 +554,34 @@ internal sealed partial class LayerCompositor
         }
     }
 
+    /// <summary>Per-pixel paint of a gradient or pattern overlay; null for solid colors (and unresolvable patterns paint nothing).</summary>
+    private EffectPaint? OverlayPaint(StyledLayer styled, OverlayEffect overlay)
+    {
+        if (overlay.Gradient is { } gradient)
+        {
+            var placement = gradient.AlignWithLayer ? MatteBounds(styled) : styled.Source.Bounds;
+            return (x, y) =>
+            {
+                var position = gradient.Position(placement, x, y, GradientSpan.LayerProjection);
+                var (r, g, b) = gradient.Color(position, endpointSmoothing: false);
+                return (r, g, b, gradient.Opacity(position, endpointSmoothing: false));
+            };
+        }
+
+        if (overlay.Pattern is { } pattern)
+        {
+            if (!_document.Patterns.TryGetValue(pattern.PatternId, out var tile))
+            {
+                return static (_, _) => (0f, 0f, 0f, 0f);
+            }
+
+            var sampler = new PatternSampler(tile, pattern, styled.Layer);
+            return sampler.Sample;
+        }
+
+        return null;
+    }
+
     /// <summary>Per-pixel effect color (straight, 0..1) and an extra alpha factor.</summary>
     internal delegate (float R, float G, float B, float A) EffectPaint(int x, int y);
 
@@ -688,24 +724,10 @@ internal sealed partial class LayerCompositor
     /// <summary>Overlays and satin as destination passes over the matte (pass-through groups cannot fold them).</summary>
     private void RenderOverlayPasses(PlanarImage target, StyledLayer styled, MaskChain? masks, bool clipMode)
     {
-        var domain = styled.Domain;
-        var matte = new Plane(domain, styled.Matte);
-        var gradientBounds = MatteBounds(styled);
+        var matte = new Plane(styled.Domain, styled.Matte);
         foreach (var overlay in styled.Effects.Overlays)
         {
-            EffectPaint? paint = null;
-            if (overlay.Gradient is { } gradient)
-            {
-                var placement = gradient.AlignWithLayer ? gradientBounds : styled.Source.Bounds;
-                paint = (x, y) =>
-                {
-                    var position = gradient.Position(placement, x, y, GradientSpan.LayerProjection);
-                    var (r, g, b) = gradient.Color(position, endpointSmoothing: false);
-                    return (r, g, b, gradient.Opacity(position, endpointSmoothing: false));
-                };
-            }
-
-            DrawEffect(target, styled, matte, overlay.Opacity * styled.Opacity, overlay.Color, overlay.Mode, masks, clipMode, null, paint);
+            DrawEffect(target, styled, matte, overlay.Opacity * styled.Opacity, overlay.Color, overlay.Mode, masks, clipMode, null, OverlayPaint(styled, overlay));
         }
 
         foreach (var satin in styled.Effects.Satins)
