@@ -12,9 +12,11 @@ Where each part of the C# library came from in the reference tree (`.reference/`
 | `Rendering/PathRasterizer.cs` | `src/core/vector_raster.cpp` | New scanline rasterizer (16 sub-scanlines, exact horizontal coverage). Group combination and subtract-first rules match the reference. |
 | `Rendering/BlendOps.cs` | `src/core/blend_math.cpp` | Float versions of the 8-bit kernels, including Photoshop's Linear Light (-256) and Pin Light offsets and the Burn/Dodge/Divide 0/0 corners. |
 | `Rendering/BlendKernels.cs` | `composite_blended_rgb`, `IsolatedClipGroupTarget` | Clip mode reproduces the frozen clip-group semantics without Blend If. |
-| `Rendering/LayerCompositor.cs` | `src/render/layer_compositor.hpp` (`composite_sibling_layers`, `composite_layer`, `composite_pass_through_group`) | No effects, Blend If, channel restrictions or special Fill yet. |
+| `Rendering/LayerCompositor.cs` | `src/render/layer_compositor.hpp` (`composite_sibling_layers`, `composite_layer`, `composite_pass_through_group`) | Effects live in `LayerCompositor.Effects.cs` and `.Bevel.cs` (from `render_*` and `layer_style_mask_ops.cpp`). No Blend If, channel restrictions or special Fill yet. |
+| `Rendering/Patterns.cs` | `src/psd/psd_patterns.cpp`, `src/core/pattern_sampler.hpp` | Same sampling rules: nearest at 100%, linear above, box below. |
+| `Rendering/Gradient.cs` | `gradient_position`, `gradient_color` in `src/core/blend_math.cpp` | No noise gradients or dither. |
 | `Rendering/MaskSampler.cs` | `src/core/layer_render_utils.cpp` (`mask_feather_box_radii`) | Density lifts the floor: `m * d + (1 - d)`. |
-| `Rendering/Adjustments.cs` | `src/core/adjustment_layer.cpp` | Threshold uses integer 30/59/11 luma; Posterize uses floor buckets. |
+| `Rendering/Adjustments*.cs` | `src/core/adjustment_layer.cpp`, `src/psd/psd_adjustments.cpp`, `src/formats/acv_curves_io.cpp` | 8-bit LUTs per channel (Hue/Saturation and Threshold per pixel). Color Balance is parsed, not rendered; the CMYK/gray ink-space evaluation is left out (no ICC). |
 | `Descriptors/Descriptor.cs` | `src/psd/psd_descriptor.cpp` | Depth-limited to 64 levels like the reference. |
 | `Text/EngineData.cs` | `src/psd/engine_data.cpp` | Read-only tree (the reference also round-trips whitespace for writing). |
 | `Text/TextLayerInfo.cs` | `src/psd/psd_text_read.cpp` | Text from the descriptor `Txt `; runs and fonts from EngineData. |

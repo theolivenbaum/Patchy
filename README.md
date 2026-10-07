@@ -13,7 +13,7 @@ It is a port of the PSD engine in Patchy, a C++ image editor whose source is kep
 - Built-in PNG and JPEG encoders. The optional `Patchy.Psd.Skia` package adds `SKBitmap` interop and Skia encoders such as WebP.
 - Text extraction: layer and group names, type-layer content with fonts and style runs, channel and path names, slices, XMP and IPTC metadata, and text inside embedded PSD/PSB smart objects.
 
-Layer effects, most adjustment layers, gradient and pattern fills, and vector strokes are not rendered from layers yet; documents saved with "Maximize Compatibility" render exactly through the merged image. See `TODO.md`.
+The layer compositor renders layer effects (shadows, glows, overlays, satin, strokes, bevel and emboss), adjustment layers (Levels, Curves, Hue/Saturation, Brightness/Contrast, Exposure, Invert, Threshold, Posterize) and solid, gradient and pattern fills. Not rendered from layers yet: vector strokes on shape layers, Blend If, some adjustments (Color Balance, Vibrance, Black and White, Channel Mixer, Selective Color, Gradient Map, Photo Filter). Documents saved with "Maximize Compatibility" render exactly through the merged image. See `TODO.md`.
 
 ## Usage
 
