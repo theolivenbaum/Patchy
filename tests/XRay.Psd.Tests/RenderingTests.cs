@@ -117,6 +117,42 @@ public sealed class RenderingTests
         Assert.True(diff.MaxDelta <= maxDelta && diff.MeanDelta <= meanDelta, $"{name}: {diff}");
     }
 
+    /// <summary>
+    /// Photoshop (CS4 here) stores the merged image of a transparent document matted
+    /// against white. Unmatted, its soft edges match the layer compositor's straight
+    /// color wherever the two agree on alpha; read as straight color they are up to
+    /// 188 levels too light.
+    /// </summary>
+    [Fact]
+    public void Merged_image_of_a_transparent_document_is_unmatted_from_white()
+    {
+        var document = Fixtures.Load("arrows.psd");
+        Assert.True(document.MergedImageHasTransparency);
+        var merged = document.GetMergedImage();
+        var layers = document.Render(new RenderOptions { Source = RenderSource.Layers });
+
+        var compared = 0;
+        var worst = 0;
+        for (var y = 0; y < document.Height; y++)
+        {
+            for (var x = 0; x < document.Width; x++)
+            {
+                var m = merged.GetPixel(x, y);
+                var l = layers.GetPixel(x, y);
+                if (m.A < 64 || m.A == 255 || Math.Abs(m.A - l.A) > 2)
+                {
+                    continue;
+                }
+
+                compared++;
+                worst = Math.Max(worst, Math.Max(Math.Abs(m.R - l.R), Math.Max(Math.Abs(m.G - l.G), Math.Abs(m.B - l.B))));
+            }
+        }
+
+        Assert.True(compared > 400, $"only {compared} soft-edge pixels");
+        Assert.True(worst <= 12, $"worst soft-edge color delta {worst}");
+    }
+
     /// <summary>Adjustment layers the compositor implements, against the merged image.</summary>
     [Theory]
     [InlineData("photoshop-invert.psd")]
