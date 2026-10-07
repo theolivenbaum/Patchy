@@ -17,6 +17,7 @@ public static class ImageResourceIds
     public const ushort UnicodeAlphaNames = 1045;
     public const ushort IndexedColorTableCount = 1046;
     public const ushort TransparencyIndex = 1047;
+    public const ushort GlobalAltitude = 1049;
     public const ushort Slices = 1050;
     public const ushort AlphaIdentifiers = 1053;
     public const ushort VersionInfo = 1057;

@@ -45,6 +45,26 @@ public sealed class RenderingTests
     [InlineData("photoshop-vector-mask-on-pixel.psd", 12, 0.2)]
     [InlineData("photoshop-compound-text.psd", 10, 0.3)]
     [InlineData("patchy-compound-group.psd", 8, 0.2)]
+
+    // Layer effects (drop shadow, glows, inner shadow, overlays, strokes, satin,
+    // effects on groups and clipping bases).
+    [InlineData("photoshop-size-zero-effects.psd", 1, 0.01)]
+    [InlineData("photoshop-inner-shadow.psd", 2, 0.01)]
+    [InlineData("photoshop-outer-glow-range.psd", 2, 0.1)]
+    [InlineData("photoshop-shadow-conceals.psd", 2, 0.05)]
+    [InlineData("photoshop-inner-glow-range.psd", 5, 0.1)]
+    [InlineData("photoshop-gradient-overlay-geometry.psd", 6, 0.1)]
+    [InlineData("photoshop-group-fx-blend-fill.psd", 1, 0.01)]
+    [InlineData("photoshop-group-fx-interior.psd", 1, 0.01)]
+    [InlineData("photoshop-group-fx-passthrough.psd", 1, 0.01)]
+    [InlineData("photoshop-group-fx-mask-stroke.psd", 30, 0.05)]
+    [InlineData("photoshop-overlay-zorder.psd", 14, 0.8)]
+    [InlineData("photoshop-outer-glow.psd", 72, 0.5)]
+    [InlineData("photoshop-inner-glow.psd", 70, 0.25)]
+    [InlineData("photoshop-stroke-overprint.psd", 52, 0.1)]
+    [InlineData("photoshop-stroke-shapeburst.psd", 125, 0.1)]
+    [InlineData("photoshop-stroke-aa-matte.psd", 90, 0.4)]
+    [InlineData("photoshop-clip-base-effects.psd", 130, 1.2)]
     public void Layer_compositor_matches_photoshop_capture(string name, int maxDelta, double meanDelta)
     {
         var document = Fixtures.Load(name);

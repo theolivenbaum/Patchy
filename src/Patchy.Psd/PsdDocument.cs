@@ -82,6 +82,12 @@ public sealed class PsdDocument
 
     internal ReadOnlyMemory<byte> FileData { get; set; }
 
+    /// <summary>Global light angle in degrees (resource 1037), used by effects with "Use Global Light".</summary>
+    public float GlobalLightAngle { get; internal set; } = 120f;
+
+    /// <summary>Global light altitude in degrees (resource 1049).</summary>
+    public float GlobalLightAltitude { get; internal set; } = 30f;
+
     /// <summary>Raw global layer mask info.</summary>
     public ReadOnlyMemory<byte> GlobalLayerMaskInfo { get; internal set; }
 

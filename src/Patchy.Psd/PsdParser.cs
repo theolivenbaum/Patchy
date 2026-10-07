@@ -135,6 +135,16 @@ internal static class PsdParser
 
         document.ImageResources = resources;
 
+        if (document.GetImageResource(ImageResourceIds.GlobalAngle) is { Data.Length: >= 4 } angle)
+        {
+            document.GlobalLightAngle = new BigEndianReader(angle.Data).ReadInt32();
+        }
+
+        if (document.GetImageResource(ImageResourceIds.GlobalAltitude) is { Data.Length: >= 4 } altitude)
+        {
+            document.GlobalLightAltitude = new BigEndianReader(altitude.Data).ReadInt32();
+        }
+
         // Version info: version u32, hasRealMergedData u8, ...
         if (document.GetImageResource(ImageResourceIds.VersionInfo) is { Data.Length: >= 5 } versionInfo)
         {
@@ -508,6 +518,7 @@ internal static class PsdParser
 
     private static void ApplyTaggedBlocks(PsdLayer layer, List<TaggedBlock> blocks, PsdDocument document)
     {
+        var sawMultiEffects = false;
         foreach (var block in blocks)
         {
             var data = block.Data;
@@ -542,6 +553,13 @@ internal static class PsdParser
                     if (data.Length >= 1)
                     {
                         layer.FillOpacity = data.Span[0];
+                    }
+
+                    break;
+                case "infx":
+                    if (data.Length >= 1)
+                    {
+                        layer.BlendInteriorElements = data.Span[0] != 0;
                     }
 
                     break;
@@ -586,12 +604,16 @@ internal static class PsdParser
                     layer.VectorMask ??= VectorPath.ParseVectorMask(data.Span, document.Width, document.Height);
                     break;
                 case "lfx2":
+                case "lfxs":
                 case "lmfx":
                     {
                         // Object-effects version u32 (0), descriptor version u32 (16), descriptor.
+                        // 'lfxs' is the group (layer set) form; 'lmfx' (multiple instances)
+                        // is authoritative over the compatibility lfx2 written beside it.
                         var effects = TryReadDescriptor(data, skip: 4);
-                        if (effects is not null)
+                        if (effects is not null && (block.Key == "lmfx" || !sawMultiEffects))
                         {
+                            sawMultiEffects |= block.Key == "lmfx";
                             layer.Effects = effects;
                             layer.EffectsVisible = effects.GetBoolean("masterFXSwitch", true);
                         }

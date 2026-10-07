@@ -22,7 +22,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/Patchy.Psd/Descriptors/` | Action Manager descriptor reader (`Objc`, `VlLs`, `UntF`, `tdta`, `obj `...) |
 | `src/Patchy.Psd/Text/` | `EngineData` parser, `TextLayerInfo` (TySh), `LegacyText` (PS 5 tySh), `TextExtractor` |
 | `src/Patchy.Psd/Imaging/` | `RgbaImage` (public output), `PlanarImage` (internal float planes), `ColorSpaces` |
-| `src/Patchy.Psd/Rendering/` | `LayerCompositor`, SIMD `BlendKernels`/`BlendOps`, `MaskSampler`, `PathRasterizer`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
+| `src/Patchy.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`), SIMD `BlendKernels`/`BlendOps`, `MaskSampler`, `PathRasterizer`, `EffectMasks`, `LayerEffects`, `Gradient`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
 | `src/Patchy.Psd/Codecs/` | Built-in `PngEncoder` and baseline `JpegEncoder` |
 | `src/Patchy.Psd.Skia/` | Optional SkiaSharp interop (SKBitmap/SKImage, Skia encoders such as WebP) |
 | `tools/Patchy.Psd.Cli/` | `psdtool info|text|render|layers` for inspection and manual checks |
@@ -66,6 +66,7 @@ The survey writes `test-output/survey.txt` (layer compositor vs merged image vs 
 - Clipping runs render into an isolated buffer seeded by the base; members blend at full strength inside the base coverage; the run merges with the base's mode. A hidden base hides the run.
 - Raster masks (default color outside the rect, density, gaussian feather as three box passes) and vector masks (Photoshop's baked plane when flagged, otherwise `PathRasterizer` with even-odd groups and Add/Subtract/Intersect/Xor between groups).
 - Solid-color fill layers synthesize their content when the file stores none.
-- Supported adjustments: Invert, Threshold, Posterize. Others are skipped. Layer effects are not rendered. See TODO.md.
+- Supported adjustments: Invert, Threshold, Posterize. Others are skipped. See TODO.md.
+- Layer effects (`lfx2`, `lfxs` on groups, `lmfx` multi-instance; `LayerCompositor.Effects.cs`): drop shadow and outer glow (spread dilation plus tent blur, Range gain, shape knockout) below the layer; gradient and color overlays and satin folded into the layer color when the layer is Normal (or `infx`) at full Fill, otherwise painted after the layer's blend; inner glow, inner shadow (interior mirror pipeline) and strokes (exact distance band on a 3x supersampled contour, outer share under the content, inner share over it, Overprint knockout, solid, gradient and Shape Burst paints) above it. Effects on clipping bases render around the merged base-plus-members content; styled groups isolate unless Pass Through. Burn and dodge effect modes fold alpha into color as Photoshop does. Bevel and emboss and pattern overlays are not rendered yet.
 
 Accuracy status per fixture is in the survey output; `RenderingTests` pins the fixtures that already match Photoshop.

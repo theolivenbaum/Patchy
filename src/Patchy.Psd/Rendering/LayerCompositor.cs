@@ -14,7 +14,7 @@ namespace Patchy.Psd.Rendering;
 /// </list>
 /// Layer effects and most adjustment layers are not rendered yet (see TODO.md).
 /// </summary>
-internal sealed class LayerCompositor
+internal sealed partial class LayerCompositor
 {
     private readonly PsdDocument _document;
     private readonly RenderOptions _options;
@@ -71,6 +71,19 @@ internal sealed class LayerCompositor
                 continue;
             }
 
+            if (layer.Kind != PsdLayerKind.Group && EffectsOf(layer) is { } baseEffects && LayerPixels(layer) is { } baseSource)
+            {
+                var members = new List<PsdLayer>();
+                for (var member = index + 1; member < runEnd; member++)
+                {
+                    members.Add(siblings[member]);
+                }
+
+                CompositeStyledClipRun(target, layer, baseSource, baseEffects, members, masks);
+                index = runEnd;
+                continue;
+            }
+
             var bounds = RenderBounds(layer).Intersect(target.Bounds);
             if (!bounds.IsEmpty)
             {
@@ -116,6 +129,12 @@ internal sealed class LayerCompositor
         var opacity = group.Opacity / 255f;
         var fill = group.FillOpacity / 255f;
         var groupMask = LayerMasks(group, ContentBounds(group).Intersect(target.Bounds));
+        if (EffectsOf(group) is { } effects)
+        {
+            CompositeStyledGroup(target, group, effects, masks, modeOverride ?? mode, clipMode, groupMask);
+            return;
+        }
+
         if (mode != PsdBlendMode.PassThrough || fill < 1f || modeOverride is not null)
         {
             var bounds = ContentBounds(group).Intersect(target.Bounds);
@@ -168,13 +187,20 @@ internal sealed class LayerCompositor
             return;
         }
 
-        var layerMask = LayerMasks(layer, region);
-        var opacity = layer.Opacity / 255f * (layer.FillOpacity / 255f);
         var mode = modeOverride ?? layer.BlendMode;
         if (mode == PsdBlendMode.PassThrough)
         {
             mode = PsdBlendMode.Normal;
         }
+
+        if (EffectsOf(layer) is { } effects)
+        {
+            CompositeStyledPixels(target, layer, source, effects, masks, mode, clipMode);
+            return;
+        }
+
+        var layerMask = LayerMasks(layer, region);
+        var opacity = layer.Opacity / 255f * (layer.FillOpacity / 255f);
 
         var dissolve = mode == PsdBlendMode.Dissolve;
         if (dissolve)

@@ -111,6 +111,9 @@ public sealed class PsdLayer
     /// <summary>Unique ID of the linked/embedded file this smart object shows.</summary>
     public string? SmartObjectFileId { get; internal set; }
 
+    /// <summary>"Blend Interior Effects as Group" (<c>infx</c>, default false).</summary>
+    public bool BlendInteriorElements { get; internal set; }
+
     /// <summary>Whether clipped layers blend with this base as a group (<c>clbl</c>, default true).</summary>
     public bool BlendClippedElements { get; internal set; } = true;
 
