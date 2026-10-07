@@ -33,6 +33,12 @@ internal sealed class BuilderLayer
     public byte MaskDefault { get; set; }
 
     public byte MaskFlags { get; set; }
+
+    /// <summary>Bytes after the mask flags (mask parameters with flag 0x10); two pad bytes when null.</summary>
+    public byte[]? MaskTail { get; set; }
+
+    /// <summary>Raw layer blending ranges ("Blend If"); empty when null.</summary>
+    public byte[]? BlendingRanges { get; set; }
 }
 
 /// <summary>
@@ -224,21 +230,24 @@ internal sealed class PsdBuilder
             var extra = new Writer();
             if (layer.MaskRect is { } maskRect)
             {
-                extra.U32(20);
+                var tail = layer.MaskTail ?? new byte[2];
+                extra.U32((uint)(18 + tail.Length));
                 extra.I32(maskRect.Top);
                 extra.I32(maskRect.Left);
                 extra.I32(maskRect.Bottom);
                 extra.I32(maskRect.Right);
                 extra.U8(layer.MaskDefault);
                 extra.U8(layer.MaskFlags);
-                extra.Zeros(2);
+                extra.Bytes(tail);
             }
             else
             {
                 extra.U32(0);
             }
 
-            extra.U32(0); // blending ranges
+            var ranges = layer.BlendingRanges ?? [];
+            extra.U32((uint)ranges.Length);
+            extra.Bytes(ranges);
             extra.Pascal(layer.Name, 4);
             var unicode = new Writer();
             unicode.UnicodeString(layer.Name);

@@ -22,7 +22,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/Patchy.Psd/Descriptors/` | Action Manager descriptor reader (`Objc`, `VlLs`, `UntF`, `tdta`, `obj `...) |
 | `src/Patchy.Psd/Text/` | `EngineData` parser, `TextLayerInfo` (TySh), `LegacyText` (PS 5 tySh), `TextExtractor` |
 | `src/Patchy.Psd/Imaging/` | `RgbaImage` (public output), `PlanarImage` (internal float planes), `ColorSpaces` |
-| `src/Patchy.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`), SIMD `BlendKernels`/`BlendOps`, `MaskSampler`, `PathRasterizer`, `EffectMasks`, `LayerEffects`, `Gradient`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
+| `src/Patchy.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Blending.cs`), SIMD `BlendKernels`/`BlendOps`, `BlendIf`, `SpecialFill`, `MaskSampler`, `PathRasterizer`, `EffectMasks`, `LayerEffects`, `Gradient`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
 | `src/Patchy.Psd/Codecs/` | Built-in `PngEncoder` and baseline `JpegEncoder` |
 | `src/Patchy.Psd.Skia/` | Optional SkiaSharp interop (SKBitmap/SKImage, Skia encoders such as WebP) |
 | `tools/Patchy.Psd.Cli/` | `psdtool info|text|render|layers` for inspection and manual checks |

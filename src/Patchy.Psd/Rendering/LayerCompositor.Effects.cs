@@ -160,7 +160,7 @@ internal sealed partial class LayerCompositor
         return new StyledLayer { Layer = layer, Effects = fx, Source = source, Domain = domain, Matte = matte, LayerMask = layerMask, OpacityOverride = opacityOverride };
     }
 
-    private void CompositeStyledPixels(PlanarImage target, PsdLayer layer, PlanarImage source, LayerEffects fx, MaskChain? masks, PsdBlendMode mode, bool clipMode)
+    private void CompositeStyledPixels(PlanarImage target, PsdLayer layer, PlanarImage source, LayerEffects fx, MaskChain? masks, PsdBlendMode mode, bool clipMode, PlanarImage? gateBackdrop = null)
     {
         var styled = PrepareStyled(layer, source, fx);
         if (styled is null)
@@ -168,9 +168,18 @@ internal sealed partial class LayerCompositor
             return;
         }
 
+        // Blend If gates the content only, never the effects, and its Underlying gate
+        // reads the backdrop as it was before this layer's exterior effects landed.
+        var gate = BlendIfOf(layer);
+        if (gate is { HasUnderlying: true } && gateBackdrop is null)
+        {
+            var region = source.Bounds.Intersect(target.Bounds);
+            gateBackdrop = region.IsEmpty ? null : Crop(target, region);
+        }
+
         RenderExteriorEffects(target, styled, masks, clipMode);
         PrepareStrokes(styled);
-        CompositeContent(target, styled, source, mode, masks, clipMode);
+        CompositeContent(target, styled, source, mode, masks, clipMode, gate, gateBackdrop);
         RenderInteriorEffects(target, styled, masks, clipMode);
     }
 
@@ -310,7 +319,7 @@ internal sealed partial class LayerCompositor
     }
 
     /// <summary>The layer's own pixels with overlays and satin folded in, stroke underlays first.</summary>
-    private void CompositeContent(PlanarImage target, StyledLayer styled, PlanarImage source, PsdBlendMode mode, MaskChain? masks, bool clipMode)
+    private void CompositeContent(PlanarImage target, StyledLayer styled, PlanarImage source, PsdBlendMode mode, MaskChain? masks, bool clipMode, BlendIf? gate = null, PlanarImage? gateBackdrop = null)
     {
         foreach (var (stroke, under, paint) in styled.StrokeUnderlays)
         {
@@ -327,8 +336,9 @@ internal sealed partial class LayerCompositor
 
         // Overlays and satin fold into the layer's color only when that is what
         // Photoshop computes: a Normal layer (or "Blend Interior Effects as Group")
-        // at full Fill. Otherwise they paint after the layer's own blend, unscaled by Fill.
-        var fold = styled.Fill >= 1f && (mode is PsdBlendMode.Normal || styled.Layer.BlendInteriorElements);
+        // at full Fill without Blend If. Otherwise they paint after the layer's own
+        // blend, unscaled by Fill and ungated.
+        var fold = styled.Fill >= 1f && (mode is PsdBlendMode.Normal || styled.Layer.BlendInteriorElements) && gate is null;
         var satinPlanes = new List<(SatinEffect Satin, Plane Plane)>();
         foreach (var satin in fold ? fx.Satins : [])
         {
@@ -352,8 +362,6 @@ internal sealed partial class LayerCompositor
         var eb = new float[width];
         var ea = new float[width];
         var ones = Enumerable.Repeat(1f, width).ToArray();
-        var dissolve = mode == PsdBlendMode.Dissolve;
-        var contentMode = dissolve ? PsdBlendMode.Normal : mode;
         for (var y = region.Top; y < region.Bottom; y++)
         {
             var s = source.RowOffset(y, region.Left);
@@ -401,7 +409,6 @@ internal sealed partial class LayerCompositor
             }
 
             source.A.AsSpan(s, width).CopyTo(alpha);
-            BlendKernels.Scale(alpha, styled.Opacity * styled.Fill);
             styled.LayerMask?.MultiplyRow(y, region.Left, alpha);
             for (var chain = masks; chain is not null; chain = chain.Next)
             {
@@ -413,13 +420,7 @@ internal sealed partial class LayerCompositor
                 BlendKernels.MultiplyInPlace(alpha, knockout.Row(y, region.Left, width));
             }
 
-            if (dissolve)
-            {
-                Dissolve(alpha, region.Left, y);
-            }
-
-            var t = target.RowOffset(y, region.Left);
-            BlendKernels.CompositeRow(contentMode, r, g, b, alpha, target.R.AsSpan(t, width), target.G.AsSpan(t, width), target.B.AsSpan(t, width), target.A.AsSpan(t, width), clipMode);
+            CompositeLayerRow(target, y, region.Left, mode, r, g, b, alpha, styled.Opacity, styled.Fill, gate, gateBackdrop, clipMode);
         }
 
         if (!fold)
@@ -550,7 +551,7 @@ internal sealed partial class LayerCompositor
 
             var t = target.RowOffset(y, region.Left);
             PrepareEffectColor(mode, r, g, b, a, target.A.AsSpan(t, width), region.Left, y, out var effectiveMode);
-            BlendKernels.CompositeRow(effectiveMode, r, g, b, a, target.R.AsSpan(t, width), target.G.AsSpan(t, width), target.B.AsSpan(t, width), target.A.AsSpan(t, width), clipMode);
+            BlendKernels.CompositeRow(effectiveMode, r, g, b, a, target.R.AsSpan(t, width), target.G.AsSpan(t, width), target.B.AsSpan(t, width), target.A.AsSpan(t, width), clipMode, clipMode ? ClipCoverageRow(target, t, width) : default);
         }
     }
 
@@ -669,7 +670,7 @@ internal sealed partial class LayerCompositor
     /// isolate: exterior effects paint from the children's silhouette before the
     /// children, interior effects after them, and group opacity fades the result.
     /// </summary>
-    private void CompositeStyledGroup(PlanarImage target, PsdLayer group, LayerEffects fx, MaskChain? masks, PsdBlendMode mode, bool clipMode, MaskSampler? groupMask)
+    private void CompositeStyledGroup(PlanarImage target, PsdLayer group, LayerEffects fx, MaskChain? masks, PsdBlendMode mode, bool clipMode, MaskSampler? groupMask, PlanarImage? gateBackdrop = null)
     {
         var bounds = ContentBounds(group).Intersect(target.Bounds);
         if (bounds.IsEmpty)
@@ -680,9 +681,9 @@ internal sealed partial class LayerCompositor
         var silhouette = new PlanarImage(bounds);
         CompositeList(silhouette, group.Children, null);
         var fill = group.FillOpacity / 255f;
-        if (mode != PsdBlendMode.PassThrough || fill < 1f)
+        if (mode != PsdBlendMode.PassThrough || fill < 1f || BlendIfOf(group) is not null)
         {
-            CompositeStyledPixels(target, group, silhouette, fx, masks, mode == PsdBlendMode.PassThrough ? PsdBlendMode.Normal : mode, clipMode);
+            CompositeStyledPixels(target, group, silhouette, fx, masks, mode == PsdBlendMode.PassThrough ? PsdBlendMode.Normal : mode, clipMode, gateBackdrop);
             return;
         }
 

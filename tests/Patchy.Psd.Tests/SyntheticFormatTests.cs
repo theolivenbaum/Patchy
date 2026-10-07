@@ -248,6 +248,27 @@ public sealed class SyntheticFormatTests
     }
 
     [Fact]
+    public void Twenty_byte_mask_record_carries_parameters_in_place_of_padding()
+    {
+        // Flag bit 4 with a density-only parameter block fills the two pad bytes of the
+        // short record (photoshop-user-mask-params.psd "density-only"): density 64 lifts
+        // the hidden floor to 1 - 64/255.
+        var builder = new PsdBuilder { Width = 2, Height = 1 };
+        var layer = RgbLayer("density", new PsdRect(0, 0, 2, 1), 255, 255, 255);
+        layer.MaskRect = new PsdRect(0, 0, 2, 1);
+        layer.MaskFlags = 0x10;
+        layer.MaskTail = [0x01, 64];
+        layer.Channels[-2] = [0, 255];
+        builder.Layers.Add(layer);
+
+        var document = PsdDocument.Load(builder.Build());
+        Assert.Equal(64, document.Layers[0].Mask!.Density);
+        var image = document.Render(new RenderOptions { Source = RenderSource.Layers });
+        Assert.InRange(image.GetPixel(0, 0).A, 190, 192);
+        Assert.Equal(255, image.GetPixel(1, 0).A);
+    }
+
+    [Fact]
     public void Disabled_masks_are_ignored()
     {
         var builder = new PsdBuilder { Width = 2, Height = 1 };
