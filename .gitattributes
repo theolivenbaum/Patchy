@@ -12,3 +12,5 @@
 *.png binary -eol
 *.jpg binary -eol
 *.bmp binary -eol
+*.ttf binary -eol
+*.otf binary -eol

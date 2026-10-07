@@ -18,6 +18,7 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 - Gradient (`GdFl`) and pattern (`PtFl`) fill layers; the `Patt` pattern store.
 - Vector strokes on shape layers (`vstk`): width, alignment, caps, joins, miter limit, dashes, solid/gradient/pattern paint, opacity, blend mode, `fillEnabled`.
 - Output: built-in PNG and JPEG encoders; optional SkiaSharp package.
+- Type-layer re-rendering in the optional `XRay.Psd.Text` package (HarfBuzz shaping, Skia outlines): point, box and vertical text, runs, leading, tracking, glyph scales, faux styles, alignment, transform, pixel-grid rounding, Warp Text, pluggable font resolution; plugged into the compositor through `RenderOptions.TextRasterizer`. See `docs/text-rendering.md`.
 
 ## Rendering gaps (highest impact first)
 
@@ -40,10 +41,11 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 
 ## Text
 
-- Type on a path: decode the path geometry (the TySh EngineData shape and the `Txt2` frame path) into a typed path once a Photoshop fixture with on-path text exists. Today such layers report `TextShapeKind.Other` and raw frame points.
-- `Txt2` style keys without a pinned meaning (underline, strikethrough, caps, manual kerning) need single-setting captures before they can be mapped (`.reference/docs/txt2.md`, "Key map").
+- Type on a path: decode the path geometry (the TySh EngineData shape and the `Txt2` frame path) into a typed path once a Photoshop fixture with on-path text exists. Today such layers report `TextShapeKind.Other` and raw frame points, and `XRay.Psd.Text` does not draw them (it keeps the stored pixels); once the path is typed, lay glyphs along it.
+- `Txt2` style keys without a pinned meaning (underline, strikethrough, caps, manual kerning) need single-setting captures before they can be mapped (`.reference/docs/txt2.md`, "Key map"). No committed fixture sets them, so they stay unmapped.
 - A real Photoshop 5 `tySh` fixture (the reference's Title02.psd is not public); the tests build synthetic records.
-- Optional text re-rendering for type layers without pixel data. This is the one place HarfBuzz (shaping) plus SkiaSharp (glyph rasterization) would be needed; keep it in a separate package.
+- Text re-rendering (`XRay.Psd.Text`, see [docs/text-rendering.md](docs/text-rendering.md)) residuals, each needing Photoshop captures: Crisp/Strong stem fitting and Smooth's heavier stems; glyph x positions under a horizontal scale (`photoshop-text-hv-scale` looks fractional); horizontal overset (intersect or fit); manual kerning placement; Small Caps and super/subscript sizes from the document's preferences; the glyph stroke (`StrokeFlag`); vertical box text beyond the one capture; mixed-direction bidi lines. Not modeled yet: hyphenation, kinsoku, tab stops, justification spacing limits, list bullets, optical kerning.
+- A fixture with Photoshop's own text in a font the tests can bundle (Liberation, Noto) would make the re-render comparable glyph for glyph; today Liberation Sans stands in for Arial (same advances, different outlines, IoU ceiling about 0.8).
 
 ## Performance and scale
 

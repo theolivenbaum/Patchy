@@ -32,6 +32,17 @@ public sealed class RenderOptions
     /// Setting it forces <see cref="RenderSource.Layers"/> under <see cref="RenderSource.Auto"/>.
     /// </summary>
     public Func<PsdLayer, bool>? LayerVisibility { get; init; }
+
+    /// <summary>
+    /// Re-renders type layers from their text model (see <see cref="TextRasterMode"/>), for
+    /// example with <c>XRay.Psd.Text</c>. Null (the default) always uses the stored pixels.
+    /// </summary>
+    public ITextLayerRasterizer? TextRasterizer { get; init; }
+
+    /// <summary>Which type layers <see cref="TextRasterizer"/> draws. <see cref="TextRasterMode.Always"/> forces <see cref="RenderSource.Layers"/> under <see cref="RenderSource.Auto"/>.</summary>
+    public TextRasterMode TextRasterMode { get; init; } = TextRasterMode.MissingPixels;
+
+    internal bool RerendersAllText => TextRasterizer is not null && TextRasterMode == TextRasterMode.Always;
 }
 
 internal static class PsdRenderer
@@ -42,7 +53,7 @@ internal static class PsdRenderer
         {
             RenderSource.MergedImage => true,
             RenderSource.Layers => false,
-            _ => options.LayerVisibility is null && (document.HasRealMergedImage || document.Layers.Count == 0) && document.MergedImageData.Length >= 2,
+            _ => options.LayerVisibility is null && !options.RerendersAllText && (document.HasRealMergedImage || document.Layers.Count == 0) && document.MergedImageData.Length >= 2,
         };
 
         var planar = useMerged ? MergedImageDecoder.Decode(document) : new LayerCompositor(document, options).Render();

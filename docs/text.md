@@ -62,6 +62,10 @@ Layout per `.reference/docs/psd-legacy-text.md`. Faces carry a PostScript name, 
 
 The style section is resolved by validation: count-first with every style naming a known face and a consistent text section, then the specification's version-word form, then count-first with unknown face marks falling back to the first face. Sizes must be in (0, 8192], tracking within 10 em, leading in [0, 32768]; line unit sums must stay within the character count, and the color plus anti-alias byte must fit. Anything else returns null and the layer stays a text layer without `Text`.
 
+## Rendering
+
+The core never draws text itself: type layers render from their stored pixels. The optional `XRay.Psd.Text` package lays out and rasterizes this model (runs, paragraphs, transform, warp) and plugs into the compositor; see [text-rendering.md](text-rendering.md).
+
 ## Gaps
 
 - Type on a path: `ShapeType` values other than 0 and 1 are reported as `TextShapeKind.Other`, and `Txt2` frame paths are exposed as raw points, but the path geometry is not decoded into a typed path (no fixture yet).

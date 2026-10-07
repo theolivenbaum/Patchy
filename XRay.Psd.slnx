@@ -2,9 +2,11 @@
   <Folder Name="/src/">
     <Project Path="src/XRay.Psd.Skia/XRay.Psd.Skia.csproj" />
     <Project Path="src/XRay.Psd/XRay.Psd.csproj" />
+    <Project Path="src/XRay.Psd.Text/XRay.Psd.Text.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/XRay.Psd.Skia.Tests/XRay.Psd.Skia.Tests.csproj" />
+    <Project Path="tests/XRay.Psd.Text.Tests/XRay.Psd.Text.Tests.csproj" />
     <Project Path="tests/XRay.Psd.Tests/XRay.Psd.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
