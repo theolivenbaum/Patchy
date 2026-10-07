@@ -37,6 +37,7 @@ internal static class PsdParser
             ReadImageResources(reader, document);
             ReadLayerAndMaskInfo(reader, document, options);
             document.MergedImageData = reader.ReadMemory(reader.Remaining);
+            TextEngineResolver.Apply(document);
         }
         catch (PsdFormatException)
         {

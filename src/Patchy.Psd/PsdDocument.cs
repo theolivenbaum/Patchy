@@ -96,6 +96,27 @@ public sealed class PsdDocument
     /// <summary>Decoded pattern tiles from the global pattern blocks, keyed by pattern ID (decoded on first use).</summary>
     internal Dictionary<string, Rendering.PatternTile> Patterns => _patterns ??= Rendering.PatternStore.Parse(this);
 
+    private TextEngineBlock? _textEngine;
+    private bool _textEngineParsed;
+
+    /// <summary>
+    /// The document-level text engine block (<c>Txt2</c>) with one text object per
+    /// type layer, parsed on first use; null when the document has none or it does not decode.
+    /// </summary>
+    public TextEngineBlock? TextEngine
+    {
+        get
+        {
+            if (!_textEngineParsed)
+            {
+                _textEngine = TextEngineResolver.ParseBlock(this);
+                _textEngineParsed = true;
+            }
+
+            return _textEngine;
+        }
+    }
+
     internal void AddLayer(PsdLayer layer) => _layers.Add(layer);
 
     internal void AddRootLayer(PsdLayer layer) => _rootLayers.Add(layer);

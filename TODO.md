@@ -9,7 +9,7 @@ Use the survey (`PATCHY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each 
 - PSD/PSB parsing: header, color mode data, image resources, layer records, mask data (all three layouts, mask parameters), tagged blocks (including PSB wide lengths and 4-byte padded global blocks), group tree, 16/32-bit layers in `Lr16`/`Lr32`, `lnk2`/`lnkD`/`lnk3`/`lnkE` linked files.
 - Channel decoding: raw, PackBits, ZIP, ZIP with prediction at 1/8/16/32 bits; SIMD sample conversion.
 - Color modes: RGB, grayscale, bitmap, indexed, CMYK (uncalibrated), Lab (D50 to sRGB), duotone (as gray), multichannel (first channel).
-- Descriptor and EngineData parsers; TySh text with style runs, paragraphs, fonts, orientation; PS 5 `tySh` text.
+- Descriptor and EngineData parsers; TySh text with style runs (character properties), paragraphs (indents, spacing, direction), fonts, orientation, warp, bounds; the global `Txt2` block as a typed model that fills TySh gaps; PS 5 `tySh` text with style runs, alignment and color. See `docs/text.md`.
 - Text extraction: layer/group names, type layers, channel names, path names, slices, XMP and IPTC metadata, recursion into embedded PSD/PSB smart objects.
 - Compositor: all 27 blend modes (SIMD), opacity and fill, pass-through and isolated groups, clipping runs, raster masks (density, feather), vector masks (baked plane or rasterized), solid fill layers, Dissolve.
 - Adjustment layers at the reference's 8-bit LUT semantics: Levels, Curves (ACV body and `Crv ` extension), Hue/Saturation (`hue2` and `hue `: master, bands, colorize), Brightness/Contrast (legacy `brit` and modern `CgEd`), Exposure, Invert, Threshold, Posterize.
@@ -39,9 +39,9 @@ Use the survey (`PATCHY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each 
 
 ## Text
 
-- Parse the global `Txt2` text engine block (`.reference/docs/txt2.md`) for documents whose layer EngineData is missing or stale.
-- Warp text (`warp` descriptor) and on-path text geometry as structured data.
-- Style runs for PS 5 `tySh` layers (sizes, colors, alignment) to match `.reference/src/psd/psd_text_legacy.cpp`.
+- Type on a path: decode the path geometry (the TySh EngineData shape and the `Txt2` frame path) into a typed path once a Photoshop fixture with on-path text exists. Today such layers report `TextShapeKind.Other` and raw frame points.
+- `Txt2` style keys without a pinned meaning (underline, strikethrough, caps, manual kerning) need single-setting captures before they can be mapped (`.reference/docs/txt2.md`, "Key map").
+- A real Photoshop 5 `tySh` fixture (the reference's Title02.psd is not public); the tests build synthetic records.
 - Optional text re-rendering for type layers without pixel data. This is the one place HarfBuzz (shaping) plus SkiaSharp (glyph rasterization) would be needed; keep it in a separate package.
 
 ## Performance and scale
