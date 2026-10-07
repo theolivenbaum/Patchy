@@ -84,6 +84,9 @@ public sealed class PsdLayer
     /// <summary>Vector mask feather (gaussian sigma in pixels) from the mask parameters.</summary>
     public double VectorMaskFeather { get; internal set; }
 
+    /// <summary>The shape's vector stroke and fill switch (<c>vstk</c>), when present.</summary>
+    public VectorStrokeStyle? VectorStroke { get; internal set; }
+
     /// <summary>Raw "blend if" ranges from the layer record.</summary>
     public ReadOnlyMemory<byte> BlendingRanges { get; internal set; }
 

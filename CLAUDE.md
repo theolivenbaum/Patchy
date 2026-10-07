@@ -18,11 +18,11 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/Patchy.Psd/` | Core library, no package dependencies |
 | `src/Patchy.Psd/IO/` | `BigEndianReader` (bounds-checked cursor), `ChannelCodec` (raw, PackBits RLE, ZIP, ZIP-with-prediction; SIMD sample conversion) |
 | `src/Patchy.Psd/PsdParser.cs` | The five file sections, layer records, mask data, tagged blocks, group tree, `lnk2` linked files |
-| `src/Patchy.Psd/Layers/` | `PsdLayer`, `LayerMask`, `VectorPath` (path records to pixel coordinates) |
+| `src/Patchy.Psd/Layers/` | `PsdLayer`, `LayerMask`, `VectorPath` (path records to pixel coordinates), `VectorStrokeStyle` (`vstk`) |
 | `src/Patchy.Psd/Descriptors/` | Action Manager descriptor reader (`Objc`, `VlLs`, `UntF`, `tdta`, `obj `...) |
 | `src/Patchy.Psd/Text/` | `EngineData` parser, `TextLayerInfo` (TySh), `LegacyText` (PS 5 tySh), `TextExtractor` |
 | `src/Patchy.Psd/Imaging/` | `RgbaImage` (public output), `PlanarImage` (internal float planes), `ColorSpaces` |
-| `src/Patchy.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`), SIMD `BlendKernels`/`BlendOps`, `MaskSampler`, `PathRasterizer`, `EffectMasks`, `LayerEffects`, `Gradient`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
+| `src/Patchy.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Strokes.cs`), SIMD `BlendKernels`/`BlendOps`, `MaskSampler`, `PathRasterizer`, `VectorStroker`, `EffectMasks`, `LayerEffects`, `Gradient`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
 | `src/Patchy.Psd/Codecs/` | Built-in `PngEncoder` and baseline `JpegEncoder` |
 | `src/Patchy.Psd.Skia/` | Optional SkiaSharp interop (SKBitmap/SKImage, Skia encoders such as WebP) |
 | `tools/Patchy.Psd.Cli/` | `psdtool info|text|render|layers` for inspection and manual checks |

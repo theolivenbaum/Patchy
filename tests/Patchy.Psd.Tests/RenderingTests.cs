@@ -45,6 +45,7 @@ public sealed class RenderingTests
     [InlineData("photoshop-vector-mask-on-pixel.psd", 12, 0.2)]
     [InlineData("photoshop-compound-text.psd", 10, 0.3)]
     [InlineData("patchy-compound-group.psd", 8, 0.2)]
+    [InlineData("photoshop-shape-strokes.psd", 40, 0.2)]
 
     // Layer effects (drop shadow, glows, inner shadow, overlays, strokes, satin,
     // effects on groups and clipping bases).
@@ -97,6 +98,7 @@ public sealed class RenderingTests
     [InlineData("patchy-gradient-empty-transparency.psd", 1, 0.01)]
     [InlineData("photoshop-bevel-default.psd", 3, 0.1)]
     [InlineData("arrows.psd", 120, 0.4)]
+    [InlineData("patchy-open-path-strokes.psd", 1, 0.01)]
     public void Layer_compositor_matches_real_merged_image(string name, int maxDelta, double meanDelta)
     {
         var document = Fixtures.Load(name);
