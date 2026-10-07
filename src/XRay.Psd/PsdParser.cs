@@ -26,8 +26,25 @@ internal static class PsdParser
         "LMsk", "Lr16", "Lr32", "Layr", "Mt16", "Mt32", "Mtrn", "Alph", "FMsk", "lnk2", "FEid", "FXid", "PxSD", "cinf",
     ];
 
-    public static PsdDocument Parse(ReadOnlyMemory<byte> data, PsdLoadOptions options)
+    /// <summary>The largest window one span can address.</summary>
+    private const int MaxWindow = int.MaxValue;
+
+    public static PsdDocument Parse(ReadOnlyMemory<byte> data, PsdLoadOptions options) => Parse(new MemorySource(data), options);
+
+    /// <summary>
+    /// Parses a file. Files up to <paramref name="windowedAbove"/> bytes are read through
+    /// one span; larger ones (PSB files past 2 GB) take the windowed path, which walks
+    /// the layer section with 64-bit offsets and gives every channel its own window.
+    /// Tests lower the threshold to run the windowed path on small files.
+    /// </summary>
+    internal static PsdDocument Parse(PsdSource source, PsdLoadOptions options, long windowedAbove = MaxWindow)
     {
+        if (source.Length > windowedAbove)
+        {
+            return ParseWindowed(source, options);
+        }
+
+        var data = source.Slice(0, (int)source.Length);
         var reader = new BigEndianReader(data);
         // Color management is known before parsing: descriptor and text colors convert while layers parse.
         var document = new PsdDocument { FileData = data, ColorManagementEnabled = options.ColorManagement };
@@ -50,6 +67,93 @@ internal static class PsdParser
         }
 
         return document;
+    }
+
+    private static PsdDocument ParseWindowed(PsdSource source, PsdLoadOptions options)
+    {
+        // Header, color mode data and resources come first and are small.
+        var head = new BigEndianReader(source.Slice(0, (int)Math.Min(source.Length, MaxWindow)));
+        var document = new PsdDocument { FileData = head.Memory };
+        try
+        {
+            ReadHeader(head, document);
+            ReadColorModeData(head, document);
+            ReadImageResources(head, document);
+            var mergedStart = ReadLayerAndMaskInfoWindowed(source, head.Position, document, options);
+
+            // The merged image decodes from one window; past 2 GB it is cut there (see docs/performance.md).
+            document.MergedImageData = source.Slice(mergedStart, (int)Math.Min(source.Length - mergedStart, MaxWindow));
+            TextEngineResolver.Apply(document);
+        }
+        catch (PsdFormatException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or OverflowException or IndexOutOfRangeException)
+        {
+            throw new PsdFormatException($"Damaged PSD structure: {ex.Message}", ex);
+        }
+
+        return document;
+    }
+
+    /// <summary>
+    /// The layer and mask section with 64-bit offsets: the layer records parse from a
+    /// window at the start of the layer info, each channel's data becomes its own
+    /// window at its file offset, and the global mask info and tagged blocks after the
+    /// layer info parse from one more window. Returns the offset of the image data section.
+    /// </summary>
+    private static long ReadLayerAndMaskInfoWindowed(PsdSource source, long position, PsdDocument document, PsdLoadOptions options)
+    {
+        var large = document.IsLargeDocument;
+        var length = ReadLengthAt(source, position, source.Length, large);
+        var sectionStart = position + (large ? 8 : 4);
+        var sectionEnd = sectionStart + length;
+        if (length < (large ? 8 : 4))
+        {
+            return sectionEnd;
+        }
+
+        var layerInfoLength = ReadLengthAt(source, sectionStart, sectionEnd, large);
+        var layerInfoStart = sectionStart + (large ? 8 : 4);
+        var layerInfoEnd = layerInfoStart + layerInfoLength;
+        var records = new List<PsdLayer>();
+        if (layerInfoLength >= 2)
+        {
+            var layerInfo = new BigEndianReader(source.Slice(layerInfoStart, (int)Math.Min(layerInfoLength, MaxWindow)));
+            if (options.ReadLayers)
+            {
+                records = ReadLayerInfo(layerInfo, document, out var mergedAlpha, source, layerInfoStart, layerInfoEnd);
+                document.MergedImageHasTransparency = mergedAlpha;
+            }
+            else
+            {
+                document.MergedImageHasTransparency = layerInfo.ReadInt16() < 0;
+            }
+        }
+
+        var rest = new BigEndianReader(source.Slice(layerInfoEnd, (int)Math.Min(sectionEnd - layerInfoEnd, MaxWindow)));
+        ReadGlobalLayerBlocks(rest, document, options, records);
+        return sectionEnd;
+    }
+
+    /// <summary>Reads a u32 (PSD) or u64 (PSB) section length at <paramref name="offset"/> that must fit before <paramref name="end"/>.</summary>
+    private static long ReadLengthAt(PsdSource source, long offset, long end, bool large)
+    {
+        var size = large ? 8 : 4;
+        if (end - offset < size)
+        {
+            throw new PsdFormatException($"Unexpected end of data at offset {offset}.");
+        }
+
+        var reader = new BigEndianReader(source.Slice(offset, size));
+        var value = large ? reader.ReadUInt64() : reader.ReadUInt32();
+        if (value > (ulong)(end - offset - size))
+        {
+            throw new PsdFormatException($"Section length {value} at offset {offset} exceeds the remaining {end - offset - size} bytes.");
+        }
+
+        return (long)value;
     }
 
     private static void ReadHeader(BigEndianReader reader, PsdDocument document)
@@ -182,6 +286,13 @@ internal static class PsdParser
             document.MergedImageHasTransparency = layerInfo.ReadInt16() < 0;
         }
 
+        ReadGlobalLayerBlocks(section, document, options, records);
+    }
+
+    /// <summary>The global layer mask info and the document-level tagged blocks after the layer info, then the layer tree.</summary>
+    private static void ReadGlobalLayerBlocks(BigEndianReader section, PsdDocument document, PsdLoadOptions options, List<PsdLayer> records)
+    {
+        var large = document.IsLargeDocument;
         if (section.Remaining >= 4)
         {
             var maskLength = section.ReadUInt32();
@@ -225,7 +336,13 @@ internal static class PsdParser
         BuildTree(document, records);
     }
 
-    private static List<PsdLayer> ReadLayerInfo(BigEndianReader reader, PsdDocument document, out bool mergedAlpha)
+    /// <summary>
+    /// Reads the layer records and attaches their channel data. With <paramref name="source"/>
+    /// (the windowed path) the reader covers the records, starting at file offset
+    /// <paramref name="readerOffset"/>, and channel data is sliced from the source up to
+    /// <paramref name="dataEnd"/> instead of from the reader.
+    /// </summary>
+    private static List<PsdLayer> ReadLayerInfo(BigEndianReader reader, PsdDocument document, out bool mergedAlpha, PsdSource? source = null, long readerOffset = 0, long dataEnd = 0)
     {
         var rawCount = reader.ReadInt16();
         mergedAlpha = rawCount < 0;
@@ -257,6 +374,7 @@ internal static class PsdParser
         }
 
         // Channel image data follows all records, in record and channel order.
+        var dataOffset = readerOffset + reader.Position;
         for (var i = 0; i < layers.Count; i++)
         {
             var layer = layers[i];
@@ -264,6 +382,15 @@ internal static class PsdParser
             var channels = new List<LayerChannel>(lengths.Length);
             for (var c = 0; c < lengths.Length; c++)
             {
+                if (source is not null)
+                {
+                    // A single channel past 2 GB cannot be one span; it reads as empty.
+                    var length = Math.Min(lengths[c], Math.Max(0, dataEnd - dataOffset));
+                    channels.Add(new LayerChannel(layer.Channels[c].Id, length <= MaxWindow ? source.Slice(dataOffset, (int)length) : ReadOnlyMemory<byte>.Empty));
+                    dataOffset += length;
+                    continue;
+                }
+
                 var available = Math.Min(lengths[c], reader.Remaining);
                 channels.Add(new LayerChannel(layer.Channels[c].Id, reader.ReadMemory(available)));
             }

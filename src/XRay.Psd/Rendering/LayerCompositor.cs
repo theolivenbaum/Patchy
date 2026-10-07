@@ -20,6 +20,7 @@ internal sealed partial class LayerCompositor
     private readonly RenderOptions _options;
     private readonly PsdRect _canvas;
     private readonly Dictionary<PsdLayer, PlanarImage?> _pixelCache = [];
+    private readonly Dictionary<PsdLayer, PlanarImage?> _prefetched = [];
 
     public LayerCompositor(PsdDocument document, RenderOptions options)
     {
@@ -32,6 +33,7 @@ internal sealed partial class LayerCompositor
 
     public PlanarImage Render()
     {
+        PrefetchPixels();
         var canvas = new PlanarImage(_canvas);
         CompositeList(canvas, _document.RootLayers, null);
         return canvas;
@@ -241,22 +243,25 @@ internal sealed partial class LayerCompositor
         var fill = layer.FillOpacity / 255f;
         var gate = BlendIfOf(layer);
         var width = region.Width;
-        var alpha = new float[width];
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, width, (start, end) =>
         {
-            var s = source.RowOffset(y, region.Left);
-            source.A.AsSpan(s, width).CopyTo(alpha);
-            layerMask?.MultiplyRow(y, region.Left, alpha);
-            for (var chain = masks; chain is not null; chain = chain.Next)
+            var alpha = new float[width];
+            for (var y = region.Top + start; y < region.Top + end; y++)
             {
-                chain.Sampler.MultiplyRow(y, region.Left, alpha);
-            }
+                var s = source.RowOffset(y, region.Left);
+                source.A.AsSpan(s, width).CopyTo(alpha);
+                layerMask?.MultiplyRow(y, region.Left, alpha);
+                for (var chain = masks; chain is not null; chain = chain.Next)
+                {
+                    chain.Sampler.MultiplyRow(y, region.Left, alpha);
+                }
 
-            CompositeLayerRow(
-                target, y, region.Left, mode,
-                source.R.AsSpan(s, width), source.G.AsSpan(s, width), source.B.AsSpan(s, width), alpha,
-                opacity, fill, gate, gateBackdrop, clipMode);
-        }
+                CompositeLayerRow(
+                    target, y, region.Left, mode,
+                    source.R.AsSpan(s, width), source.G.AsSpan(s, width), source.B.AsSpan(s, width), alpha,
+                    opacity, fill, gate, gateBackdrop, clipMode);
+            }
+        });
     }
 
     /// <summary>
@@ -272,21 +277,24 @@ internal sealed partial class LayerCompositor
         }
 
         var width = region.Width;
-        var alpha = new float[width];
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, width, (start, end) =>
         {
-            var s = source.RowOffset(y, region.Left);
-            source.A.AsSpan(s, width).CopyTo(alpha);
-            for (var chain = masks; chain is not null; chain = chain.Next)
+            var alpha = new float[width];
+            for (var y = region.Top + start; y < region.Top + end; y++)
             {
-                chain.Sampler.MultiplyRow(y, region.Left, alpha);
-            }
+                var s = source.RowOffset(y, region.Left);
+                source.A.AsSpan(s, width).CopyTo(alpha);
+                for (var chain = masks; chain is not null; chain = chain.Next)
+                {
+                    chain.Sampler.MultiplyRow(y, region.Left, alpha);
+                }
 
-            CompositeLayerRow(
-                target, y, region.Left, mode,
-                source.R.AsSpan(s, width), source.G.AsSpan(s, width), source.B.AsSpan(s, width), alpha,
-                opacity, 1f, gate, gateBackdrop, clipMode);
-        }
+                CompositeLayerRow(
+                    target, y, region.Left, mode,
+                    source.R.AsSpan(s, width), source.G.AsSpan(s, width), source.B.AsSpan(s, width), alpha,
+                    opacity, 1f, gate, gateBackdrop, clipMode);
+            }
+        });
     }
 
     private void ApplyAdjustment(PlanarImage target, PsdLayer layer, MaskChain? masks)
@@ -303,37 +311,40 @@ internal sealed partial class LayerCompositor
         var mode = layer.BlendMode is PsdBlendMode.PassThrough or PsdBlendMode.Dissolve ? PsdBlendMode.Normal : layer.BlendMode;
         var gate = BlendIfOf(layer);
         var width = region.Width;
-        var alpha = new float[width];
-        var r = new float[width];
-        var g = new float[width];
-        var b = new float[width];
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, width, (start, end) =>
         {
-            var t = target.RowOffset(y, region.Left);
-            var tr = target.R.AsSpan(t, width);
-            var tg = target.G.AsSpan(t, width);
-            var tb = target.B.AsSpan(t, width);
-            tr.CopyTo(r);
-            tg.CopyTo(g);
-            tb.CopyTo(b);
-            adjustment.Apply(r, g, b);
-            alpha.AsSpan().Fill(opacity);
-            layerMask?.MultiplyRow(y, region.Left, alpha);
-            for (var chain = masks; chain is not null; chain = chain.Next)
+            var alpha = new float[width];
+            var r = new float[width];
+            var g = new float[width];
+            var b = new float[width];
+            for (var y = region.Top + start; y < region.Top + end; y++)
             {
-                chain.Sampler.MultiplyRow(y, region.Left, alpha);
-            }
+                var t = target.RowOffset(y, region.Left);
+                var tr = target.R.AsSpan(t, width);
+                var tg = target.G.AsSpan(t, width);
+                var tb = target.B.AsSpan(t, width);
+                tr.CopyTo(r);
+                tg.CopyTo(g);
+                tb.CopyTo(b);
+                adjustment.Apply(r, g, b);
+                alpha.AsSpan().Fill(opacity);
+                layerMask?.MultiplyRow(y, region.Left, alpha);
+                for (var chain = masks; chain is not null; chain = chain.Next)
+                {
+                    chain.Sampler.MultiplyRow(y, region.Left, alpha);
+                }
 
-            // Blend If: This Layer tests the adjusted color, Underlying the backdrop before it.
-            if (gate is not null)
-            {
-                ApplyAdjustmentGate(gate, r, g, b, tr, tg, tb, target.A.AsSpan(t, width), alpha);
-            }
+                // Blend If: This Layer tests the adjusted color, Underlying the backdrop before it.
+                if (gate is not null)
+                {
+                    ApplyAdjustmentGate(gate, r, g, b, tr, tg, tb, target.A.AsSpan(t, width), alpha);
+                }
 
-            // Adjustments recolor existing coverage only: the clip-mode kernel
-            // blends at full strength where the backdrop has alpha and never grows it.
-            BlendKernels.CompositeRow(mode, r, g, b, alpha, tr, tg, tb, target.A.AsSpan(t, width), clipMode: true, ClipCoverageRow(target, t, width));
-        }
+                // Adjustments recolor existing coverage only: the clip-mode kernel
+                // blends at full strength where the backdrop has alpha and never grows it.
+                BlendKernels.CompositeRow(mode, r, g, b, alpha, tr, tg, tb, target.A.AsSpan(t, width), clipMode: true, ClipCoverageRow(target, t, width));
+            }
+        });
     }
 
     private static MaskChain? Chain(MaskChain? chain, MaskSampler? sampler) => sampler is null ? chain : new MaskChain(sampler, chain);
@@ -374,6 +385,72 @@ internal sealed partial class LayerCompositor
         return result is null ? vector : MaskSampler.Multiply(result, vector);
     }
 
+    /// <summary>
+    /// Inflates the stored pixels of every layer the render can reach (visible, with
+    /// visible ancestors and nonzero opacity) in parallel before compositing starts.
+    /// The compositor keeps every decoded layer for the whole render anyway, so this
+    /// changes when decoding happens, not how much memory it holds.
+    /// </summary>
+    private void PrefetchPixels()
+    {
+        var layers = new List<PsdLayer>();
+        foreach (var layer in _document.Layers)
+        {
+            if (layer.Kind is PsdLayerKind.Group or PsdLayerKind.Adjustment || layer.Bounds.IsEmpty || layer.Opacity == 0 || layer.Channels.Count == 0)
+            {
+                continue;
+            }
+
+            var reachable = true;
+            for (var node = layer; node is not null && reachable; node = node.Parent)
+            {
+                reachable = IsVisible(node);
+            }
+
+            if (reachable)
+            {
+                layers.Add(layer);
+            }
+        }
+
+        if (layers.Count < 2)
+        {
+            return;
+        }
+
+        var decoded = new PlanarImage?[layers.Count];
+        var succeeded = new bool[layers.Count];
+        var area = 0L;
+        foreach (var layer in layers)
+        {
+            area += (long)layer.Bounds.Width * layer.Bounds.Height;
+        }
+
+        Parallelism.For(layers.Count, area / layers.Count, (start, end) =>
+        {
+            for (var i = start; i < end; i++)
+            {
+                try
+                {
+                    decoded[i] = layers[i].DecodePixels();
+                    succeeded[i] = true;
+                }
+                catch (PsdFormatException)
+                {
+                    // Left to LayerPixels: a damaged layer fails the render only if it is drawn.
+                }
+            }
+        });
+
+        for (var i = 0; i < layers.Count; i++)
+        {
+            if (succeeded[i])
+            {
+                _prefetched[layers[i]] = decoded[i];
+            }
+        }
+    }
+
     /// <summary>Decoded pixels for a content layer, synthesizing solid fills when the layer stores none.</summary>
     private PlanarImage? LayerPixels(PsdLayer layer)
     {
@@ -382,7 +459,9 @@ internal sealed partial class LayerCompositor
             return cached;
         }
 
-        var pixels = layer.Kind == PsdLayerKind.Text && _options.TextRasterizer is { } textRasterizer ? TextLayerPixels(layer, textRasterizer) : layer.DecodePixels();
+        var hasPrefetched = _prefetched.Remove(layer, out var prefetched);
+        PlanarImage? Decode() => hasPrefetched ? prefetched : layer.DecodePixels();
+        var pixels = layer.Kind == PsdLayerKind.Text && _options.TextRasterizer is { } textRasterizer ? TextLayerPixels(layer, textRasterizer, Decode) : Decode();
         if (layer.Kind == PsdLayerKind.Fill && (pixels is null || IsEmptyCoverage(pixels)) && StrokedShapePixels(layer) is { } shape)
         {
             pixels = shape;

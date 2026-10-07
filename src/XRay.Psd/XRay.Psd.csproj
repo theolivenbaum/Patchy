@@ -19,5 +19,6 @@
   <ItemGroup>
     <InternalsVisibleTo Include="XRay.Psd.Tests" />
     <InternalsVisibleTo Include="XRay.Psd.Skia" />
+    <InternalsVisibleTo Include="XRay.Psd.Benchmarks" />
   </ItemGroup>
 </Project>

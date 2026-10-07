@@ -16,7 +16,8 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | Path | What |
 |---|---|
 | `src/XRay.Psd/` | Core library, no package dependencies |
-| `src/XRay.Psd/IO/` | `BigEndianReader` (bounds-checked cursor), `ChannelCodec` (raw, PackBits RLE, ZIP, ZIP-with-prediction; SIMD sample conversion) |
+| `src/XRay.Psd/IO/` | `BigEndianReader` (bounds-checked cursor), `ChannelCodec` (raw, PackBits RLE, ZIP, ZIP-with-prediction; SIMD sample conversion), `PsdSource` (in-memory or memory-mapped file with 64-bit offsets), `StreamLoader` |
+| `src/XRay.Psd/Parallelism.cs` | `Parallelism.For`: deterministic row-strip loops, degree from `RenderOptions.MaxDegreeOfParallelism`; see `docs/performance.md` |
 | `src/XRay.Psd/PsdParser.cs` | The five file sections, layer records, mask data, tagged blocks, group tree, `lnk2` linked files |
 | `src/XRay.Psd/Layers/` | `PsdLayer`, `LayerMask`, `VectorPath` (path records to pixel coordinates), `VectorStrokeStyle` (`vstk`), `PsdLayerStyle` (public effects view over `Rendering/LayerEffects`) |
 | `src/XRay.Psd/Resources/` | `PsdImageResources` (`PsdDocument.Resources`): typed, lazily parsed image resources; see `docs/api.md` |
@@ -29,6 +30,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/XRay.Psd.Text/` | Optional type-layer re-rendering (SkiaSharp + HarfBuzz): `IFontResolver` (`FontCollection`, `SystemFontResolver`, aliases), `TextLayoutEngine`, `TextWarpMesh`, `TextLayerRenderer`, `TextLayerRasterizer`; see `docs/text-rendering.md` |
 | `tools/XRay.Psd.Cli/` | `psdtool info|text|render|layers` for inspection and manual checks (`info --resources --effects`) |
 | `fuzz/XRay.Psd.Fuzz/` | SharpFuzz harness (the only project allowed that dependency); see `docs/testing.md` |
+| `benchmarks/XRay.Psd.Benchmarks/` | BenchmarkDotNet suite (the only BenchmarkDotNet reference): load, text, decode, composite, encode, scaling |
 | `tests/XRay.Psd.Tests/` | xUnit v3 tests; `Support/PsdBuilder.cs` writes synthetic PSD/PSB files |
 | `tests/XRay.Psd.Skia.Tests/` | Skia interop tests; also decodes the built-in PNG/JPEG output with Skia |
 | `tests/XRay.Psd.Text.Tests/` | Text re-rendering tests against the type fixtures; bundles Liberation Sans (OFL) in `Fonts/`, never uses system fonts |
@@ -41,6 +43,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `docs/color.md` | ICC color management: what converts (pixels and stored colors), duotone, Little CMS parity, accuracy |
 | `docs/api.md` | Typed resource and layer-style views, CLI flags, NuGet packaging |
 | `docs/testing.md` | Test suites, mutation test, fuzzing, the psd-tools fixtures |
+| `docs/performance.md` | Benchmarks, parallel and SIMD rules, PNG segments, stream, async and memory-mapped loading, PSB over 2 GB |
 
 ## Commands
 
@@ -51,7 +54,8 @@ dotnet test --project tests/XRay.Psd.Tests -c Release -- --filter-class "*Render
 XRAY_PSD_SURVEY=1 dotnet test --project tests/XRay.Psd.Tests -c Release -- --filter-method "*Survey"
 dotnet run --project tools/XRay.Psd.Cli -c Release -- info tests/fixtures/psd/arrows.psd --resources --effects
 XRAY_PSD_MUTATIONS=200 dotnet test --project tests/XRay.Psd.Tests -c Release -- --filter-class "*MutationFuzzTests"  # deep mutation run
-dotnet pack XRay.Psd.slnx -c Release -o artifacts       # XRay.Psd and XRay.Psd.Skia (+ .snupkg), 0 warnings
+dotnet pack XRay.Psd.slnx -c Release -o artifacts       # XRay.Psd, XRay.Psd.Skia and XRay.Psd.Text (+ .snupkg), 0 warnings
+dotnet run --project benchmarks/XRay.Psd.Benchmarks -c Release -- --filter "*" --job short
 ```
 
 The survey writes `test-output/survey.txt` (layer compositor vs merged image vs Photoshop BMP for every fixture) plus `*.layers.png`/`*.merged.png`. Run it before and after any rendering change and compare. `test-output/` is gitignored.
@@ -67,6 +71,7 @@ The survey writes `test-output/survey.txt` (layer compositor vs merged image vs 
 - Pixel data stays compressed until rendering asks for it (`PsdLayer.DecodePixels`). Text extraction and inspection must not decode pixels.
 - Hot loops are planar float and SIMD: use `System.Numerics.Vector<T>` (or `Vector128/256` where a fixed width fits, as in the JPEG DCT). Blend modes are `IBlendOp`/`IChannelBlend` structs with static abstract members so the JIT emits one specialized loop per mode; do not add per-pixel virtual dispatch or delegates.
 - Determinism: no `Random` or `std`-style distributions in rendering. Dissolve uses the splitmix64 hash of the document coordinate, as in the reference.
+- Parallel loops use `Parallelism.For` (never `Parallel.For`), split only independent items (rows, lines, channels), and must give bit-identical output at every degree; `IAdjustment.Apply` and `CompositeLayerRow` run concurrently on different rows, so they keep no shared mutable state. Add a case to `ParallelismTests` for each new parallel loop.
 - Public API: keep `PsdDocument`, `PsdLayer`, `RgbaImage`, `RenderOptions`, `PsdTextContent` stable; mark new internals `internal`. `PsdBlendMode` is append-only.
 - Tests that need files outside the repository copy them into `local-test-fixtures/` (gitignored) first. Never hardcode machine paths.
 - Commit only verified, finished work with a short subject line. No AI attribution or co-author trailers in commits or pull requests.

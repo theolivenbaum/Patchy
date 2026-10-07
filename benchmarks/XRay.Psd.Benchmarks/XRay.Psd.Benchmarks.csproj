@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- BenchmarkDotNet is allowed here only; the core library stays dependency-free. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>XRay.Psd.Benchmarks</RootNamespace>
+    <NoWarn>$(NoWarn);CA1515;CA1822;CA1707</NoWarn>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/XRay.Psd/XRay.Psd.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The synthetic large document is written with the test suite's PSD builder. -->
+    <Compile Include="../../tests/XRay.Psd.Tests/Support/PsdBuilder.cs" Link="Support/PsdBuilder.cs" />
+  </ItemGroup>
+</Project>

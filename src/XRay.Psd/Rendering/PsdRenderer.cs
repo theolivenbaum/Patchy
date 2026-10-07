@@ -43,12 +43,21 @@ public sealed class RenderOptions
     public TextRasterMode TextRasterMode { get; init; } = TextRasterMode.MissingPixels;
 
     internal bool RerendersAllText => TextRasterizer is not null && TextRasterMode == TextRasterMode.Always;
+
+    /// <summary>
+    /// The most threads a render may use for channel decoding, compositing rows,
+    /// mask blurs and color conversion. Defaults to the processor count; 1 renders
+    /// on the calling thread only, zero or negative means the processor count.
+    /// The result is bit-identical for every value.
+    /// </summary>
+    public int MaxDegreeOfParallelism { get; init; } = Environment.ProcessorCount;
 }
 
 internal static class PsdRenderer
 {
     public static RgbaImage Render(PsdDocument document, RenderOptions options)
     {
+        using var scope = Parallelism.Use(options.MaxDegreeOfParallelism);
         var useMerged = options.Source switch
         {
             RenderSource.MergedImage => true,

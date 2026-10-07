@@ -48,31 +48,34 @@ internal static class EffectMasks
         }
 
         var dilated = (float[])mask.Clone();
-        for (var y = 0; y < height; y++)
+        Parallelism.For(height, (long)width * weights.Count, (first, last) =>
         {
-            for (var x = 0; x < width; x++)
+            for (var y = first; y < last; y++)
             {
-                var index = (y * width) + x;
-                var value = dilated[index];
-                foreach (var (dx, dy, weight) in weights)
+                for (var x = 0; x < width; x++)
                 {
-                    var sx = x + dx;
-                    var sy = y + dy;
-                    if ((uint)sx >= (uint)width || (uint)sy >= (uint)height)
+                    var index = (y * width) + x;
+                    var value = dilated[index];
+                    foreach (var (dx, dy, weight) in weights)
                     {
-                        continue;
+                        var sx = x + dx;
+                        var sy = y + dy;
+                        if ((uint)sx >= (uint)width || (uint)sy >= (uint)height)
+                        {
+                            continue;
+                        }
+
+                        var candidate = mask[(sy * width) + sx] * weight;
+                        if (candidate > value)
+                        {
+                            value = candidate;
+                        }
                     }
 
-                    var candidate = mask[(sy * width) + sx] * weight;
-                    if (candidate > value)
-                    {
-                        value = candidate;
-                    }
+                    dilated[index] = value;
                 }
-
-                dilated[index] = value;
             }
-        }
+        });
 
         dilated.AsSpan().CopyTo(mask);
     }
@@ -109,31 +112,34 @@ internal static class EffectMasks
 
     private static void ConvolveLines(float[] input, float[] output, int lineCount, int lineLength, int lineStep, int sampleStep, int peak)
     {
-        var prefix = new double[lineLength + 1];
-        var weighted = new double[lineLength + 1];
         var divisor = (double)peak * peak;
-        for (var line = 0; line < lineCount; line++)
+        Parallelism.For(lineCount, lineLength, (first, last) =>
         {
-            var baseIndex = line * lineStep;
-            for (var p = 0; p < lineLength; p++)
+            var prefix = new double[lineLength + 1];
+            var weighted = new double[lineLength + 1];
+            for (var line = first; line < last; line++)
             {
-                double value = input[baseIndex + (p * sampleStep)];
-                prefix[p + 1] = prefix[p] + value;
-                weighted[p + 1] = weighted[p] + (p * value);
-            }
+                var baseIndex = line * lineStep;
+                for (var p = 0; p < lineLength; p++)
+                {
+                    double value = input[baseIndex + (p * sampleStep)];
+                    prefix[p + 1] = prefix[p] + value;
+                    weighted[p + 1] = weighted[p] + (p * value);
+                }
 
-            for (var p = 0; p < lineLength; p++)
-            {
-                var left = Math.Max(0, p - peak + 1);
-                var right = Math.Min(lineLength, p + peak);
-                var leftSum = prefix[p + 1] - prefix[left];
-                var leftWeighted = weighted[p + 1] - weighted[left];
-                var rightSum = prefix[right] - prefix[p + 1];
-                var rightWeighted = weighted[right] - weighted[p + 1];
-                var numerator = ((peak - p) * leftSum) + leftWeighted + ((peak + p) * rightSum) - rightWeighted;
-                output[baseIndex + (p * sampleStep)] = (float)(numerator / divisor);
+                for (var p = 0; p < lineLength; p++)
+                {
+                    var left = Math.Max(0, p - peak + 1);
+                    var right = Math.Min(lineLength, p + peak);
+                    var leftSum = prefix[p + 1] - prefix[left];
+                    var leftWeighted = weighted[p + 1] - weighted[left];
+                    var rightSum = prefix[right] - prefix[p + 1];
+                    var rightWeighted = weighted[right] - weighted[p + 1];
+                    var numerator = ((peak - p) * leftSum) + leftWeighted + ((peak + p) * rightSum) - rightWeighted;
+                    output[baseIndex + (p * sampleStep)] = (float)(numerator / divisor);
+                }
             }
-        }
+        });
     }
 
     /// <summary>
@@ -431,30 +437,40 @@ internal static class EffectMasks
         }
 
         var n = Math.Max(width, height);
-        var f = new float[n];
-        var d = new float[n];
-        var v = new int[n];
-        var z = new double[n + 1];
-        for (var x = 0; x < width; x++)
+        Parallelism.For(width, height * 4L, (first, last) =>
         {
-            for (var y = 0; y < height; y++)
+            var f = new float[n];
+            var d = new float[n];
+            var v = new int[n];
+            var z = new double[n + 1];
+            for (var x = first; x < last; x++)
             {
-                f[y] = field[(y * width) + x];
-            }
+                for (var y = 0; y < height; y++)
+                {
+                    f[y] = field[(y * width) + x];
+                }
 
-            Transform1D(f, d, v, z, height);
-            for (var y = 0; y < height; y++)
-            {
-                field[(y * width) + x] = d[y];
+                Transform1D(f, d, v, z, height);
+                for (var y = 0; y < height; y++)
+                {
+                    field[(y * width) + x] = d[y];
+                }
             }
-        }
+        });
 
-        for (var y = 0; y < height; y++)
+        Parallelism.For(height, width * 4L, (first, last) =>
         {
-            field.AsSpan(y * width, width).CopyTo(f);
-            Transform1D(f, d, v, z, width);
-            d.AsSpan(0, width).CopyTo(field.AsSpan(y * width, width));
-        }
+            var f = new float[n];
+            var d = new float[n];
+            var v = new int[n];
+            var z = new double[n + 1];
+            for (var y = first; y < last; y++)
+            {
+                field.AsSpan(y * width, width).CopyTo(f);
+                Transform1D(f, d, v, z, width);
+                d.AsSpan(0, width).CopyTo(field.AsSpan(y * width, width));
+            }
+        });
     }
 
     private static void Transform1D(float[] f, float[] d, int[] v, double[] z, int n)
@@ -629,70 +645,77 @@ internal static class EffectMasks
         }
     }
 
+    // Rows into the scratch plane, then columns back into the mask; lines are independent and run in parallel.
     private static void BoxPass(float[] mask, float[] horizontal, int width, int height, int radius)
     {
-        for (var y = 0; y < height; y++)
+        Parallelism.For(height, width + (2L * radius), (first, last) =>
         {
-            var sum = 0f;
-            var count = 0;
-            for (var x = -radius; x <= radius; x++)
+            for (var y = first; y < last; y++)
             {
-                if (x >= 0 && x < width)
+                var sum = 0f;
+                var count = 0;
+                for (var x = -radius; x <= radius; x++)
                 {
-                    sum += mask[(y * width) + x];
-                    count++;
+                    if (x >= 0 && x < width)
+                    {
+                        sum += mask[(y * width) + x];
+                        count++;
+                    }
+                }
+
+                for (var x = 0; x < width; x++)
+                {
+                    horizontal[(y * width) + x] = sum / Math.Max(1, count);
+                    var remove = x - radius;
+                    var add = x + radius + 1;
+                    if (remove >= 0 && remove < width)
+                    {
+                        sum -= mask[(y * width) + remove];
+                        count--;
+                    }
+
+                    if (add >= 0 && add < width)
+                    {
+                        sum += mask[(y * width) + add];
+                        count++;
+                    }
                 }
             }
+        });
 
-            for (var x = 0; x < width; x++)
-            {
-                horizontal[(y * width) + x] = sum / Math.Max(1, count);
-                var remove = x - radius;
-                var add = x + radius + 1;
-                if (remove >= 0 && remove < width)
-                {
-                    sum -= mask[(y * width) + remove];
-                    count--;
-                }
-
-                if (add >= 0 && add < width)
-                {
-                    sum += mask[(y * width) + add];
-                    count++;
-                }
-            }
-        }
-
-        for (var x = 0; x < width; x++)
+        Parallelism.For(width, height + (2L * radius), (first, last) =>
         {
-            var sum = 0f;
-            var count = 0;
-            for (var y = -radius; y <= radius; y++)
+            for (var x = first; x < last; x++)
             {
-                if (y >= 0 && y < height)
+                var sum = 0f;
+                var count = 0;
+                for (var y = -radius; y <= radius; y++)
                 {
-                    sum += horizontal[(y * width) + x];
-                    count++;
-                }
-            }
-
-            for (var y = 0; y < height; y++)
-            {
-                mask[(y * width) + x] = sum / Math.Max(1, count);
-                var remove = y - radius;
-                var add = y + radius + 1;
-                if (remove >= 0 && remove < height)
-                {
-                    sum -= horizontal[(remove * width) + x];
-                    count--;
+                    if (y >= 0 && y < height)
+                    {
+                        sum += horizontal[(y * width) + x];
+                        count++;
+                    }
                 }
 
-                if (add >= 0 && add < height)
+                for (var y = 0; y < height; y++)
                 {
-                    sum += horizontal[(add * width) + x];
-                    count++;
+                    mask[(y * width) + x] = sum / Math.Max(1, count);
+                    var remove = y - radius;
+                    var add = y + radius + 1;
+                    if (remove >= 0 && remove < height)
+                    {
+                        sum -= horizontal[(remove * width) + x];
+                        count--;
+                    }
+
+                    if (add >= 0 && add < height)
+                    {
+                        sum += horizontal[(add * width) + x];
+                        count++;
+                    }
                 }
             }
-        }
+        });
     }
 }

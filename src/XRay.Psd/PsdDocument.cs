@@ -1,4 +1,5 @@
 using XRay.Psd.Imaging;
+using XRay.Psd.IO;
 using XRay.Psd.Layers;
 using XRay.Psd.Rendering;
 using XRay.Psd.Text;
@@ -21,6 +22,15 @@ public sealed class PsdLoadOptions
     /// without a usable profile convert the same way either way.
     /// </summary>
     public bool ColorManagement { get; init; } = true;
+
+    /// <summary>
+    /// Map the file into memory instead of reading it into a managed array (the path
+    /// overloads only). Pages load when parsing or rendering touches them, so opening a
+    /// large document reads little more than its layer records. The document then holds
+    /// the file open until it is disposed. Files too large for one array (2 GB and up)
+    /// are always mapped.
+    /// </summary>
+    public bool MemoryMap { get; init; }
 }
 
 /// <summary>
@@ -28,7 +38,12 @@ public sealed class PsdLoadOptions
 /// compressed until rendering or <see cref="PsdLayer.GetPixels"/> decodes it,
 /// so text extraction and inspection stay cheap.
 /// </summary>
-public sealed class PsdDocument
+/// <remarks>
+/// Disposing matters only for memory-mapped documents (<see cref="PsdLoadOptions.MemoryMap"/>,
+/// or files of 2 GB and more): it closes the mapping, after which reading pixel data
+/// throws <see cref="ObjectDisposedException"/>. For documents loaded into memory it does nothing.
+/// </remarks>
+public sealed class PsdDocument : IDisposable
 {
     private readonly List<PsdLayer> _layers = [];
     private readonly List<PsdLayer> _rootLayers = [];
@@ -95,6 +110,9 @@ public sealed class PsdDocument
 
     internal ReadOnlyMemory<byte> FileData { get; set; }
 
+    /// <summary>The memory-mapped file behind the document, released by <see cref="Dispose"/>.</summary>
+    internal IO.PsdSource? Source { get; set; }
+
     /// <summary>Global light angle in degrees (resource 1037), used by effects with "Use Global Light".</summary>
     public float GlobalLightAngle { get; internal set; } = 120f;
 
@@ -148,14 +166,28 @@ public sealed class PsdDocument
 
     internal void AddRootLayer(PsdLayer layer) => _rootLayers.Add(layer);
 
-    public static PsdDocument Load(string path, PsdLoadOptions? options = null) => Load(File.ReadAllBytes(path), options);
+    /// <summary>Loads a file. See <see cref="PsdLoadOptions.MemoryMap"/> for mapping instead of reading it.</summary>
+    public static PsdDocument Load(string path, PsdLoadOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        options ??= new PsdLoadOptions();
+        if (options.MemoryMap || new FileInfo(path).Length > Array.MaxLength)
+        {
+            return LoadMapped(path, options);
+        }
 
+        return Load(File.ReadAllBytes(path), options);
+    }
+
+    /// <summary>
+    /// Loads from a stream, reading it from its current position to the end. A seekable
+    /// stream is read straight into one array of the remaining length; other streams are
+    /// buffered once. The stream is not disposed.
+    /// </summary>
     public static PsdDocument Load(Stream stream, PsdLoadOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        using var buffer = new MemoryStream();
-        stream.CopyTo(buffer);
-        return Load(buffer.ToArray(), options);
+        return Load(StreamLoader.ReadAll(stream), options);
     }
 
     public static PsdDocument Load(byte[] data, PsdLoadOptions? options = null) => Load(new ReadOnlyMemory<byte>(data), options);
@@ -165,6 +197,58 @@ public sealed class PsdDocument
         options ??= new PsdLoadOptions();
         return PsdParser.Parse(data, options);
     }
+
+    /// <summary>
+    /// Reads a file asynchronously, then parses it. Parsing reads only the structure
+    /// (pixel data stays compressed), so it runs on the calling thread after the read.
+    /// With <see cref="PsdLoadOptions.MemoryMap"/> (or a file of 2 GB and more) the file is
+    /// mapped instead, which involves no bulk read.
+    /// </summary>
+    public static async Task<PsdDocument> LoadAsync(string path, PsdLoadOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        options ??= new PsdLoadOptions();
+        if (options.MemoryMap || new FileInfo(path).Length > Array.MaxLength)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return LoadMapped(path, options);
+        }
+
+        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using (stream.ConfigureAwait(false))
+        {
+            var data = await StreamLoader.ReadAllAsync(stream, cancellationToken).ConfigureAwait(false);
+            return Load(data, options);
+        }
+    }
+
+    /// <summary>Reads a stream asynchronously from its current position to the end, then parses it. The stream is not disposed.</summary>
+    public static async Task<PsdDocument> LoadAsync(Stream stream, PsdLoadOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        var data = await StreamLoader.ReadAllAsync(stream, cancellationToken).ConfigureAwait(false);
+        return Load(data, options);
+    }
+
+    private static PsdDocument LoadMapped(string path, PsdLoadOptions options)
+    {
+        var source = IO.MappedFileSource.Open(path);
+        try
+        {
+            var document = PsdParser.Parse(source, options);
+            document.ColorManagementEnabled = options.ColorManagement;
+            document.Source = source;
+            return document;
+        }
+        catch
+        {
+            source.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Releases the memory mapping of a mapped document; does nothing for documents loaded into memory.</summary>
+    public void Dispose() => Source?.Dispose();
 
     /// <summary>True when the bytes start with the <c>8BPS</c> signature.</summary>
     public static bool IsPsd(ReadOnlySpan<byte> data) => data.Length >= 4 && data[0] == (byte)'8' && data[1] == (byte)'B' && data[2] == (byte)'P' && data[3] == (byte)'S';

@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace XRay.Psd.IO;
 
@@ -76,17 +77,50 @@ internal static class ChannelCodec
     /// </summary>
     public static void DecodeRle(ReadOnlySpan<byte> data, ReadOnlySpan<byte> counts, int countSize, int rows, int rowBytes, Span<byte> output)
     {
+        // Row offsets first (a cheap prefix sum, clamped exactly like a sequential
+        // walk), so the rows themselves can unpack independently in parallel.
+        var offsets = new int[rows + 1];
         var offset = 0;
         for (var row = 0; row < rows; row++)
         {
             var count = countSize == 4
                 ? (int)Math.Min(BinaryPrimitives.ReadUInt32BigEndian(counts[(row * 4)..]), int.MaxValue)
                 : BinaryPrimitives.ReadUInt16BigEndian(counts[(row * 2)..]);
-            var destination = output.Slice(row * rowBytes, rowBytes);
-            count = Math.Min(count, Math.Max(0, data.Length - offset));
-            _ = UnpackBits(data.Slice(offset, count), destination);
+            offsets[row] = offset;
+            offset += Math.Min(count, Math.Max(0, data.Length - offset));
+        }
 
-            offset += count;
+        offsets[rows] = offset;
+        if (rows < 2 || Parallelism.StripCount(rows, rowBytes) <= 1)
+        {
+            UnpackRows(data, offsets, 0, rows, rowBytes, output);
+            return;
+        }
+
+        unsafe
+        {
+            fixed (byte* source = data)
+            fixed (byte* target = output)
+            {
+                var sourcePointer = (IntPtr)source;
+                var targetPointer = (IntPtr)target;
+                var sourceLength = data.Length;
+                var targetLength = output.Length;
+                Parallelism.For(rows, rowBytes, (start, end) =>
+                {
+                    var from = new ReadOnlySpan<byte>((byte*)sourcePointer, sourceLength);
+                    var to = new Span<byte>((byte*)targetPointer, targetLength);
+                    UnpackRows(from, offsets, start, end, rowBytes, to);
+                });
+            }
+        }
+    }
+
+    private static void UnpackRows(ReadOnlySpan<byte> data, int[] offsets, int start, int end, int rowBytes, Span<byte> output)
+    {
+        for (var row = start; row < end; row++)
+        {
+            _ = UnpackBits(data[offsets[row]..offsets[row + 1]], output.Slice(row * rowBytes, rowBytes));
         }
     }
 
@@ -161,64 +195,117 @@ internal static class ChannelCodec
         }
     }
 
-    /// <summary>Reverses the ZIP-with-prediction row delta filter in place.</summary>
+    /// <summary>Reverses the ZIP-with-prediction row delta filter in place. Rows are independent and run in parallel.</summary>
     public static void UndoPrediction(Span<byte> data, int width, int height, int depth)
     {
-        var rowBytes = RowBytes(width, depth);
-        switch (depth)
+        if (depth is not (8 or 16 or 32) || width <= 0 || height <= 0)
         {
-            case 8:
-                for (var y = 0; y < height; y++)
-                {
-                    var row = data.Slice(y * rowBytes, rowBytes);
-                    byte acc = 0;
-                    for (var x = 0; x < row.Length; x++)
-                    {
-                        acc += row[x];
-                        row[x] = acc;
-                    }
-                }
+            return;
+        }
 
-                break;
-            case 16:
-                for (var y = 0; y < height; y++)
+        var rowBytes = RowBytes(width, depth);
+        unsafe
+        {
+            fixed (byte* pointer = data)
+            {
+                var address = (IntPtr)pointer;
+                var length = data.Length;
+                Parallelism.For(height, rowBytes, (start, end) =>
                 {
-                    var row = data.Slice(y * rowBytes, rowBytes);
-                    ushort acc = 0;
-                    for (var x = 0; x < width; x++)
+                    var all = new Span<byte>((byte*)address, length);
+                    var planes = depth == 32 ? new byte[rowBytes] : null;
+                    for (var y = start; y < end; y++)
                     {
-                        acc += BinaryPrimitives.ReadUInt16BigEndian(row[(x * 2)..]);
-                        BinaryPrimitives.WriteUInt16BigEndian(row[(x * 2)..], acc);
-                    }
-                }
-
-                break;
-            case 32:
-                {
-                    // 32-bit rows are delta-coded bytewise after splitting each float
-                    // into four byte planes (all high bytes first, then the next...).
-                    var planes = new byte[rowBytes];
-                    for (var y = 0; y < height; y++)
-                    {
-                        var row = data.Slice(y * rowBytes, rowBytes);
-                        byte acc = 0;
-                        for (var i = 0; i < rowBytes; i++)
+                        var row = all.Slice(y * rowBytes, rowBytes);
+                        switch (depth)
                         {
-                            acc += row[i];
-                            planes[i] = acc;
-                        }
+                            case 8:
+                                PrefixSumBytes(row);
+                                break;
+                            case 16:
+                                PrefixSumBigEndianWords(row);
+                                break;
+                            default:
+                                // 32-bit rows are delta-coded bytewise after splitting each float
+                                // into four byte planes (all high bytes first, then the next...).
+                                row.CopyTo(planes);
+                                PrefixSumBytes(planes);
+                                for (var x = 0; x < width; x++)
+                                {
+                                    row[(x * 4) + 0] = planes![x];
+                                    row[(x * 4) + 1] = planes[width + x];
+                                    row[(x * 4) + 2] = planes[(2 * width) + x];
+                                    row[(x * 4) + 3] = planes[(3 * width) + x];
+                                }
 
-                        for (var x = 0; x < width; x++)
-                        {
-                            row[(x * 4) + 0] = planes[x];
-                            row[(x * 4) + 1] = planes[width + x];
-                            row[(x * 4) + 2] = planes[(2 * width) + x];
-                            row[(x * 4) + 3] = planes[(3 * width) + x];
+                                break;
                         }
                     }
+                });
+            }
+        }
+    }
 
-                    break;
-                }
+    /// <summary>In-place wrapping prefix sum of bytes (log-step SIMD scan per 16 bytes, carried across blocks).</summary>
+    internal static void PrefixSumBytes(Span<byte> row)
+    {
+        var x = 0;
+        byte acc = 0;
+        if (Vector128.IsHardwareAccelerated && row.Length >= Vector128<byte>.Count)
+        {
+            var carry = Vector128<byte>.Zero;
+            ref var start = ref MemoryMarshal.GetReference(row);
+            for (; x <= row.Length - Vector128<byte>.Count; x += Vector128<byte>.Count)
+            {
+                var v = Vector128.LoadUnsafe(ref start, (nuint)x);
+                v += Vector128.Shuffle(v, Vector128.Create((byte)0xFF, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14));
+                v += Vector128.Shuffle(v, Vector128.Create((byte)0xFF, 0xFF, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13));
+                v += Vector128.Shuffle(v, Vector128.Create((byte)0xFF, 0xFF, 0xFF, 0xFF, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11));
+                v += Vector128.Shuffle(v, Vector128.Create((byte)0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 1, 2, 3, 4, 5, 6, 7));
+                v += carry;
+                v.StoreUnsafe(ref start, (nuint)x);
+                carry = Vector128.Shuffle(v, Vector128.Create((byte)15));
+            }
+
+            acc = row[x - 1];
+        }
+
+        for (; x < row.Length; x++)
+        {
+            acc += row[x];
+            row[x] = acc;
+        }
+    }
+
+    /// <summary>In-place wrapping prefix sum of big-endian 16-bit words (SIMD scan per 8 words).</summary>
+    internal static void PrefixSumBigEndianWords(Span<byte> row)
+    {
+        var words = row.Length / 2;
+        var x = 0;
+        ushort acc = 0;
+        if (Vector128.IsHardwareAccelerated && words >= Vector128<ushort>.Count)
+        {
+            var swap = Vector128.Create((byte)1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14);
+            var carry = Vector128<ushort>.Zero;
+            ref var start = ref MemoryMarshal.GetReference(row);
+            for (; x <= words - Vector128<ushort>.Count; x += Vector128<ushort>.Count)
+            {
+                var v = Vector128.Shuffle(Vector128.LoadUnsafe(ref start, (nuint)(x * 2)), swap).AsUInt16();
+                v += Vector128.Shuffle(v, Vector128.Create((ushort)0xFFFF, 0, 1, 2, 3, 4, 5, 6));
+                v += Vector128.Shuffle(v, Vector128.Create((ushort)0xFFFF, 0xFFFF, 0, 1, 2, 3, 4, 5));
+                v += Vector128.Shuffle(v, Vector128.Create((ushort)0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0, 1, 2, 3));
+                v += carry;
+                Vector128.Shuffle(v.AsByte(), swap).StoreUnsafe(ref start, (nuint)(x * 2));
+                carry = Vector128.Shuffle(v, Vector128.Create((ushort)7));
+            }
+
+            acc = BinaryPrimitives.ReadUInt16BigEndian(row[((x - 1) * 2)..]);
+        }
+
+        for (; x < words; x++)
+        {
+            acc += BinaryPrimitives.ReadUInt16BigEndian(row[(x * 2)..]);
+            BinaryPrimitives.WriteUInt16BigEndian(row[(x * 2)..], acc);
         }
     }
 
@@ -228,6 +315,39 @@ internal static class ChannelCodec
     /// 1-bit samples map set bits to 0 (black) and clear bits to 1.
     /// </summary>
     public static void ToFloat(ReadOnlySpan<byte> samples, int width, int height, int depth, Span<float> destination)
+    {
+        if (height < 2 || Parallelism.StripCount(height, width) <= 1)
+        {
+            ToFloatRows(samples, width, height, depth, destination);
+            return;
+        }
+
+        // Rows convert independently; each strip runs the same per-element math.
+        var rowBytes = RowBytes(width, depth);
+        if (samples.Length < (long)rowBytes * height || destination.Length < (long)width * height)
+        {
+            throw new ArgumentException("Sample or destination buffer is too small.");
+        }
+
+        unsafe
+        {
+            fixed (byte* source = samples)
+            fixed (float* target = destination)
+            {
+                var sourceAddress = (IntPtr)source;
+                var targetAddress = (IntPtr)target;
+                Parallelism.For(height, width, (start, end) =>
+                {
+                    var rows = end - start;
+                    var strip = new ReadOnlySpan<byte>((byte*)sourceAddress + ((long)start * rowBytes), rows * rowBytes);
+                    var output = new Span<float>((float*)targetAddress + ((long)start * width), rows * width);
+                    ToFloatRows(strip, width, rows, depth, output);
+                });
+            }
+        }
+    }
+
+    private static void ToFloatRows(ReadOnlySpan<byte> samples, int width, int height, int depth, Span<float> destination)
     {
         var pixels = width * height;
         switch (depth)

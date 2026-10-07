@@ -208,15 +208,19 @@ public sealed class PsdLayer
 
         var doc = Document;
         var colorCount = ColorSpaces.ColorChannelCount(doc.ColorMode);
-        var planes = new float[]?[colorCount];
-        var any = false;
-        for (short i = 0; i < colorCount; i++)
+        // Color planes, then alpha (index colorCount), inflated in parallel.
+        var decoded = new float[]?[colorCount + 1];
+        Parallelism.For(decoded.Length, (long)bounds.Width * bounds.Height, (start, end) =>
         {
-            planes[i] = DecodeChannelPlane(i, bounds);
-            any |= planes[i] is not null;
-        }
+            for (var i = start; i < end; i++)
+            {
+                decoded[i] = DecodeChannelPlane(i < colorCount ? (short)i : (short)-1, bounds);
+            }
+        });
 
-        var alpha = DecodeChannelPlane(-1, bounds);
+        var planes = decoded[..colorCount];
+        var alpha = decoded[colorCount];
+        var any = Array.Exists(planes, plane => plane is not null);
         if (!any && alpha is null)
         {
             return null;

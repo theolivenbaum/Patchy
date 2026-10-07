@@ -10,12 +10,12 @@ internal sealed partial class LayerCompositor
     /// rasterizer's output for <see cref="TextRasterMode.Always"/>, or when the stored
     /// pixels are missing or empty; otherwise the stored pixels.
     /// </summary>
-    private PlanarImage? TextLayerPixels(PsdLayer layer, ITextLayerRasterizer rasterizer)
+    private PlanarImage? TextLayerPixels(PsdLayer layer, ITextLayerRasterizer rasterizer, Func<PlanarImage?> decode)
     {
         PlanarImage? stored = null;
         if (_options.TextRasterMode != TextRasterMode.Always)
         {
-            stored = layer.DecodePixels();
+            stored = decode();
             if (stored is not null && !IsEmptyCoverage(stored))
             {
                 return stored;
