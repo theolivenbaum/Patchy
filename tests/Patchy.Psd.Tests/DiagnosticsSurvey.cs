@@ -26,7 +26,7 @@ public sealed class DiagnosticsSurvey(ITestOutputHelper output)
                 var merged = document.Render(new RenderOptions { Source = RenderSource.MergedImage });
                 var layers = document.Render(new RenderOptions { Source = RenderSource.Layers });
                 var line = $"{name,-55} {(document.HasRealMergedImage ? "real" : "PLCH")} layers-vs-merged {ImageTools.Compare(layers, merged)}";
-                var bmp = Path.ChangeExtension(Fixtures.PathOf(name), ".bmp");
+                var bmp = Fixtures.ReferenceBmpOf(name);
                 if (File.Exists(bmp))
                 {
                     var reference = ImageTools.ReadBmp(bmp);

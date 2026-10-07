@@ -65,13 +65,18 @@ internal sealed partial class LayerCompositor
                 continue;
             }
 
-            if (!IsVisible(layer) || layer.Opacity == 0)
+            // An all-channels-restricted base removes the whole run.
+            var baseRestriction = RestrictionOf(layer);
+            if (!IsVisible(layer) || layer.Opacity == 0 || baseRestriction == RestrictAll)
             {
                 index = runEnd;
                 continue;
             }
 
-            if (layer.Kind != PsdLayerKind.Group && EffectsOf(layer) is { } baseEffects && LayerPixels(layer) is { } baseSource)
+            // A restricted base gates the merged run against the original backdrop
+            // (ps-compat.md "Advanced Blending Channels"); members restrict themselves.
+            var baseGate = BlendIfOf(layer);
+            if (layer.Kind != PsdLayerKind.Group && baseGate is null && EffectsOf(layer) is { } baseEffects && LayerPixels(layer) is { } baseSource)
             {
                 var members = new List<PsdLayer>();
                 for (var member = index + 1; member < runEnd; member++)
@@ -79,51 +84,80 @@ internal sealed partial class LayerCompositor
                     members.Add(siblings[member]);
                 }
 
-                CompositeStyledClipRun(target, layer, baseSource, baseEffects, members, masks);
+                WithChannelRestriction(target, baseRestriction, AffectedBounds(layer), () => CompositeStyledClipRun(target, layer, baseSource, baseEffects, members, masks));
                 index = runEnd;
                 continue;
             }
 
-            var bounds = RenderBounds(layer).Intersect(target.Bounds);
+            var runBounds = layer.Kind == PsdLayerKind.Group ? RenderBounds(layer) : AffectedBounds(layer);
+            var bounds = runBounds.Intersect(target.Bounds);
             if (!bounds.IsEmpty)
             {
+                // A Blend If base keeps the isolated path: its Underlying gate reads the
+                // backdrop outside the buffer, and its ungated alpha stays the clip shape.
                 var group = new PlanarImage(bounds);
-                CompositeLayer(group, layer, null, PsdBlendMode.Normal, clipMode: false);
+                var gateBackdrop = baseGate is { HasUnderlying: true } ? Crop(target, bounds) : null;
+                if (baseGate is not null)
+                {
+                    _clipCoverage[group] = new float[bounds.Width * bounds.Height];
+                }
+
+                CompositeLayer(group, layer, null, PsdBlendMode.Normal, clipMode: false, gateBackdrop, suppressRestriction: true);
                 for (var member = index + 1; member < runEnd; member++)
                 {
                     CompositeLayer(group, siblings[member], null, null, clipMode: true);
                 }
 
+                _clipCoverage.Remove(group);
                 var mode = layer.BlendMode == PsdBlendMode.PassThrough ? PsdBlendMode.Normal : layer.BlendMode;
-                MergeImage(target, group, mode, 1f, masks, clipMode: false);
+                WithChannelRestriction(target, baseRestriction, bounds, () => MergeImage(target, group, mode, 1f, masks, clipMode: false));
             }
 
             index = runEnd;
         }
     }
 
-    private void CompositeLayer(PlanarImage target, PsdLayer layer, MaskChain? masks, PsdBlendMode? modeOverride, bool clipMode)
+    /// <summary>
+    /// Composites one layer. <paramref name="gateBackdrop"/> overrides the backdrop the
+    /// Underlying Blend If gate reads (a clipping-run base renders into a transparent
+    /// buffer); <paramref name="suppressRestriction"/> skips the layer's own channel
+    /// restriction when the caller applies it at a merge instead.
+    /// </summary>
+    private void CompositeLayer(PlanarImage target, PsdLayer layer, MaskChain? masks, PsdBlendMode? modeOverride, bool clipMode, PlanarImage? gateBackdrop = null, bool suppressRestriction = false)
     {
         if (!IsVisible(layer) || layer.Opacity == 0)
         {
             return;
         }
 
+        // All three channels excluded removes the layer, effects included.
+        var restriction = RestrictionOf(layer);
+        if (restriction == RestrictAll)
+        {
+            return;
+        }
+
+        if (restriction != 0 && !suppressRestriction)
+        {
+            WithChannelRestriction(target, restriction, AffectedBounds(layer), () => CompositeLayer(target, layer, masks, modeOverride, clipMode, gateBackdrop, suppressRestriction: true));
+            return;
+        }
+
         switch (layer.Kind)
         {
             case PsdLayerKind.Group:
-                CompositeGroup(target, layer, masks, modeOverride, clipMode);
+                CompositeGroup(target, layer, masks, modeOverride, clipMode, gateBackdrop);
                 break;
             case PsdLayerKind.Adjustment:
                 ApplyAdjustment(target, layer, masks);
                 break;
             default:
-                CompositePixels(target, layer, masks, modeOverride, clipMode);
+                CompositePixels(target, layer, masks, modeOverride, clipMode, gateBackdrop);
                 break;
         }
     }
 
-    private void CompositeGroup(PlanarImage target, PsdLayer group, MaskChain? masks, PsdBlendMode? modeOverride, bool clipMode)
+    private void CompositeGroup(PlanarImage target, PsdLayer group, MaskChain? masks, PsdBlendMode? modeOverride, bool clipMode, PlanarImage? gateBackdrop)
     {
         var mode = modeOverride ?? group.BlendMode;
         var opacity = group.Opacity / 255f;
@@ -131,11 +165,14 @@ internal sealed partial class LayerCompositor
         var groupMask = LayerMasks(group, ContentBounds(group).Intersect(target.Bounds));
         if (EffectsOf(group) is { } effects)
         {
-            CompositeStyledGroup(target, group, effects, masks, modeOverride ?? mode, clipMode, groupMask);
+            CompositeStyledGroup(target, group, effects, masks, modeOverride ?? mode, clipMode, groupMask, gateBackdrop);
             return;
         }
 
-        if (mode != PsdBlendMode.PassThrough || fill < 1f || modeOverride is not null)
+        // Blend If groups always isolate, Pass Through included: the gates test the
+        // merged children against the outside backdrop.
+        var gate = BlendIfOf(group);
+        if (mode != PsdBlendMode.PassThrough || fill < 1f || modeOverride is not null || gate is not null)
         {
             var bounds = ContentBounds(group).Intersect(target.Bounds);
             if (bounds.IsEmpty)
@@ -146,7 +183,7 @@ internal sealed partial class LayerCompositor
             var isolated = new PlanarImage(bounds);
             CompositeList(isolated, group.Children, null);
             var merged = mode == PsdBlendMode.PassThrough ? PsdBlendMode.Normal : mode;
-            MergeImage(target, isolated, merged, opacity * fill, Chain(masks, groupMask), clipMode);
+            MergeImage(target, isolated, merged, opacity * fill, Chain(masks, groupMask), clipMode, gate, gateBackdrop);
             return;
         }
 
@@ -173,7 +210,7 @@ internal sealed partial class LayerCompositor
         }
     }
 
-    private void CompositePixels(PlanarImage target, PsdLayer layer, MaskChain? masks, PsdBlendMode? modeOverride, bool clipMode)
+    private void CompositePixels(PlanarImage target, PsdLayer layer, MaskChain? masks, PsdBlendMode? modeOverride, bool clipMode, PlanarImage? gateBackdrop)
     {
         var source = LayerPixels(layer);
         if (source is null)
@@ -195,47 +232,38 @@ internal sealed partial class LayerCompositor
 
         if (EffectsOf(layer) is { } effects)
         {
-            CompositeStyledPixels(target, layer, source, effects, masks, mode, clipMode);
+            CompositeStyledPixels(target, layer, source, effects, masks, mode, clipMode, gateBackdrop);
             return;
         }
 
         var layerMask = LayerMasks(layer, region);
-        var opacity = layer.Opacity / 255f * (layer.FillOpacity / 255f);
-
-        var dissolve = mode == PsdBlendMode.Dissolve;
-        if (dissolve)
-        {
-            mode = PsdBlendMode.Normal;
-        }
-
+        var opacity = layer.Opacity / 255f;
+        var fill = layer.FillOpacity / 255f;
+        var gate = BlendIfOf(layer);
         var width = region.Width;
         var alpha = new float[width];
         for (var y = region.Top; y < region.Bottom; y++)
         {
             var s = source.RowOffset(y, region.Left);
-            var t = target.RowOffset(y, region.Left);
             source.A.AsSpan(s, width).CopyTo(alpha);
-            BlendKernels.Scale(alpha, opacity);
             layerMask?.MultiplyRow(y, region.Left, alpha);
             for (var chain = masks; chain is not null; chain = chain.Next)
             {
                 chain.Sampler.MultiplyRow(y, region.Left, alpha);
             }
 
-            if (dissolve)
-            {
-                Dissolve(alpha, region.Left, y);
-            }
-
-            BlendKernels.CompositeRow(
-                mode,
+            CompositeLayerRow(
+                target, y, region.Left, mode,
                 source.R.AsSpan(s, width), source.G.AsSpan(s, width), source.B.AsSpan(s, width), alpha,
-                target.R.AsSpan(t, width), target.G.AsSpan(t, width), target.B.AsSpan(t, width), target.A.AsSpan(t, width),
-                clipMode);
+                opacity, fill, gate, gateBackdrop, clipMode);
         }
     }
 
-    private void MergeImage(PlanarImage target, PlanarImage source, PsdBlendMode mode, float opacity, MaskChain? masks, bool clipMode)
+    /// <summary>
+    /// Merges an isolated buffer (a group or clipping run) into the target with a blend
+    /// mode, opacity, masks and, for groups, the group's Blend If gate.
+    /// </summary>
+    private void MergeImage(PlanarImage target, PlanarImage source, PsdBlendMode mode, float opacity, MaskChain? masks, bool clipMode, BlendIf? gate = null, PlanarImage? gateBackdrop = null)
     {
         var region = source.Bounds.Intersect(target.Bounds);
         if (region.IsEmpty || opacity <= 0)
@@ -243,35 +271,21 @@ internal sealed partial class LayerCompositor
             return;
         }
 
-        var dissolve = mode == PsdBlendMode.Dissolve;
-        if (dissolve)
-        {
-            mode = PsdBlendMode.Normal;
-        }
-
         var width = region.Width;
         var alpha = new float[width];
         for (var y = region.Top; y < region.Bottom; y++)
         {
             var s = source.RowOffset(y, region.Left);
-            var t = target.RowOffset(y, region.Left);
             source.A.AsSpan(s, width).CopyTo(alpha);
-            BlendKernels.Scale(alpha, opacity);
             for (var chain = masks; chain is not null; chain = chain.Next)
             {
                 chain.Sampler.MultiplyRow(y, region.Left, alpha);
             }
 
-            if (dissolve)
-            {
-                Dissolve(alpha, region.Left, y);
-            }
-
-            BlendKernels.CompositeRow(
-                mode,
+            CompositeLayerRow(
+                target, y, region.Left, mode,
                 source.R.AsSpan(s, width), source.G.AsSpan(s, width), source.B.AsSpan(s, width), alpha,
-                target.R.AsSpan(t, width), target.G.AsSpan(t, width), target.B.AsSpan(t, width), target.A.AsSpan(t, width),
-                clipMode);
+                opacity, 1f, gate, gateBackdrop, clipMode);
         }
     }
 
@@ -287,6 +301,7 @@ internal sealed partial class LayerCompositor
         var layerMask = LayerMasks(layer, region);
         var opacity = layer.Opacity / 255f * (layer.FillOpacity / 255f);
         var mode = layer.BlendMode is PsdBlendMode.PassThrough or PsdBlendMode.Dissolve ? PsdBlendMode.Normal : layer.BlendMode;
+        var gate = BlendIfOf(layer);
         var width = region.Width;
         var alpha = new float[width];
         var r = new float[width];
@@ -309,9 +324,15 @@ internal sealed partial class LayerCompositor
                 chain.Sampler.MultiplyRow(y, region.Left, alpha);
             }
 
+            // Blend If: This Layer tests the adjusted color, Underlying the backdrop before it.
+            if (gate is not null)
+            {
+                ApplyAdjustmentGate(gate, r, g, b, tr, tg, tb, target.A.AsSpan(t, width), alpha);
+            }
+
             // Adjustments recolor existing coverage only: the clip-mode kernel
             // blends at full strength where the backdrop has alpha and never grows it.
-            BlendKernels.CompositeRow(mode, r, g, b, alpha, tr, tg, tb, target.A.AsSpan(t, width), clipMode: true);
+            BlendKernels.CompositeRow(mode, r, g, b, alpha, tr, tg, tb, target.A.AsSpan(t, width), clipMode: true, ClipCoverageRow(target, t, width));
         }
     }
 
@@ -338,7 +359,10 @@ internal sealed partial class LayerCompositor
         else if (layer.VectorMask is { } path && !region.IsEmpty)
         {
             var reach = layer.VectorMaskFeather > 0 ? (int)Math.Ceiling(layer.VectorMaskFeather * 3) + 1 : 0;
-            var vectorRegion = new PsdRect(region.Left - reach, region.Top - reach, region.Right + reach, region.Bottom + reach).Intersect(_canvas);
+            // The vector feather does not clamp at the canvas: rasterize the path
+            // past the edge so the blur sees real coverage there.
+            var limit = new PsdRect(_canvas.Left - reach, _canvas.Top - reach, _canvas.Right + reach, _canvas.Bottom + reach);
+            var vectorRegion = new PsdRect(region.Left - reach, region.Top - reach, region.Right + reach, region.Bottom + reach).Intersect(limit);
             vector = MaskSampler.FromVectorMask(path, vectorRegion, layer.VectorMaskDensity, layer.VectorMaskFeather, _canvas);
         }
 

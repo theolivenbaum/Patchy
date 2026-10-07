@@ -381,8 +381,12 @@ internal static class PsdParser
                 ChannelId = -3,
             };
         }
-        else if (mask.Remaining >= 2 && mask.Length == 20)
+        else if (mask.Remaining >= 2 && mask.Length == 20 && (flags & 0x10) == 0)
         {
+            // The plain 20-byte form ends in two pad bytes. With mask parameters
+            // (flag bit 4) those two bytes are the parameter flags and a density
+            // byte instead (photoshop-user-mask-params.psd "density-only",
+            // photoshop-shape-feather.psd "sdensity-60").
             mask.Skip(2);
         }
 

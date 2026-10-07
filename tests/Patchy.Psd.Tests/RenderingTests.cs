@@ -22,7 +22,7 @@ public sealed class RenderingTests
     {
         var document = Fixtures.Load(name);
         Assert.True(document.HasRealMergedImage);
-        var reference = ImageTools.ReadBmp(Path.ChangeExtension(Fixtures.PathOf(name), ".bmp"));
+        var reference = ImageTools.ReadBmp(Fixtures.ReferenceBmpOf(name));
 
         var diff = ImageTools.Compare(document.GetMergedImage(), reference);
 
@@ -46,6 +46,14 @@ public sealed class RenderingTests
     [InlineData("photoshop-compound-text.psd", 10, 0.3)]
     [InlineData("patchy-compound-group.psd", 8, 0.2)]
     [InlineData("photoshop-shape-strokes.psd", 40, 0.2)]
+
+    // Mask density and feather, Advanced Blending channel restrictions with Fill on a
+    // special mode.
+    [InlineData("photoshop-user-mask-params.psd", 6, 0.3)]
+    [InlineData("photoshop-vector-mask-feather.psd", 5, 0.6)]
+    [InlineData("photoshop-channel-restrictions.psd", 1, 0.01)]
+    [InlineData("photoshop-blend-if-4b-roundtrip.psd", 2, 0.6)]
+    [InlineData("photoshop-shape-feather.psd", 4, 0.5)]
 
     // Layer effects (drop shadow, glows, inner shadow, overlays, strokes, satin,
     // effects on groups and clipping bases).
@@ -84,7 +92,7 @@ public sealed class RenderingTests
     public void Layer_compositor_matches_photoshop_capture(string name, int maxDelta, double meanDelta)
     {
         var document = Fixtures.Load(name);
-        var reference = ImageTools.ReadBmp(Path.ChangeExtension(Fixtures.PathOf(name), ".bmp"));
+        var reference = ImageTools.ReadBmp(Fixtures.ReferenceBmpOf(name));
 
         var rendered = document.Render(new RenderOptions { Source = RenderSource.Layers });
         var diff = ImageTools.Compare(rendered, reference);

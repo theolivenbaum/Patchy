@@ -28,6 +28,21 @@ internal static class Fixtures
 
     public static PsdDocument Load(string name) => PsdDocument.Load(PathOf(name));
 
+    /// <summary>
+    /// The Photoshop reference capture of a fixture: the .bmp beside it, or the one
+    /// capture whose name differs (the Blend If round-trip fixture's render).
+    /// </summary>
+    public static string ReferenceBmpOf(string name)
+    {
+        var path = System.IO.Path.ChangeExtension(PathOf(name), ".bmp");
+        if (!File.Exists(path) && name.EndsWith("-roundtrip.psd", StringComparison.Ordinal))
+        {
+            path = PathOf(name[..^"-roundtrip.psd".Length] + "-render.bmp");
+        }
+
+        return path;
+    }
+
     public static IEnumerable<string> AllDocuments() =>
         System.IO.Directory.EnumerateFiles(Root.Value)
             .Where(f => f.EndsWith(".psd", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".psb", StringComparison.OrdinalIgnoreCase))

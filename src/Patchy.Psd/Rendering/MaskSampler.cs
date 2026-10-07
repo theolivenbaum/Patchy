@@ -23,7 +23,9 @@ internal sealed class MaskSampler
     public static MaskSampler Constant(float value) => new([], default, value);
 
     /// <summary>Builds the sampler for a raster mask, applying feather (gaussian sigma in px) and density.</summary>
-    public static MaskSampler? FromLayerMask(PsdLayer layer, LayerMask mask, PsdRect canvas)
+    public static MaskSampler? FromLayerMask(PsdLayer layer, LayerMask mask, PsdRect canvas) => FromPlane(layer, mask, canvas, clampFeather: true);
+
+    private static MaskSampler? FromPlane(PsdLayer layer, LayerMask mask, PsdRect canvas, bool clampFeather)
     {
         if (mask.Disabled)
         {
@@ -40,7 +42,7 @@ internal sealed class MaskSampler
 
         if (mask.Feather > 0)
         {
-            (plane, rect) = Feather(plane, rect, outside, mask.Feather, canvas);
+            (plane, rect) = Feather(plane, rect, outside, mask.Feather, canvas, clampFeather);
         }
 
         if (mask.Density < 255)
@@ -80,7 +82,7 @@ internal sealed class MaskSampler
         var rect = region;
         if (feather > 0)
         {
-            (coverage, rect) = Feather(coverage, rect, outside, feather, canvas);
+            (coverage, rect) = Feather(coverage, rect, outside, feather, canvas, clampToCanvas: false);
         }
 
         if (density < 255)
@@ -105,7 +107,7 @@ internal sealed class MaskSampler
             return null;
         }
 
-        return FromLayerMask(layer, mask with { Disabled = false }, canvas);
+        return FromPlane(layer, mask with { Disabled = false }, canvas, clampFeather: false);
     }
 
     /// <summary>Value at one document pixel.</summary>
@@ -138,10 +140,13 @@ internal sealed class MaskSampler
 
     /// <summary>
     /// Gaussian feather approximated by three box passes per axis (the "boxes for
-    /// gauss" split). The plane grows by the blur reach, clamped to the canvas,
-    /// with the outside value as padding.
+    /// gauss" split). The plane grows by the blur reach with the outside value as
+    /// padding. Raster masks clamp the blur at the canvas edge (no fade there,
+    /// reference <c>compute_feathered_layer_mask</c>); vector masks do not: the
+    /// coverage beyond the canvas is whatever the path says, so a path ending on
+    /// the canvas edge fades there (reference <c>update_vector_mask_raster</c>).
     /// </summary>
-    private static (float[] Plane, PsdRect Rect) Feather(float[] plane, PsdRect rect, float outside, double sigma, PsdRect canvas)
+    private static (float[] Plane, PsdRect Rect) Feather(float[] plane, PsdRect rect, float outside, double sigma, PsdRect canvas, bool clampToCanvas)
     {
         var radii = BoxRadii(sigma);
         var reach = radii[0] + radii[1] + radii[2];
@@ -150,7 +155,8 @@ internal sealed class MaskSampler
             return (plane, rect);
         }
 
-        var domain = rect.IsEmpty ? canvas : new PsdRect(rect.Left - reach, rect.Top - reach, rect.Right + reach, rect.Bottom + reach).Intersect(canvas);
+        var limit = clampToCanvas ? canvas : new PsdRect(canvas.Left - reach, canvas.Top - reach, canvas.Right + reach, canvas.Bottom + reach);
+        var domain = rect.IsEmpty ? limit : new PsdRect(rect.Left - reach, rect.Top - reach, rect.Right + reach, rect.Bottom + reach).Intersect(limit);
         if (domain.IsEmpty)
         {
             return (plane, rect);
