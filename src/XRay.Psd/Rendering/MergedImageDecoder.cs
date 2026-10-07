@@ -131,6 +131,13 @@ internal static class MergedImageDecoder
     /// <summary>
     /// Photoshop stores the merged image of a transparent document matted
     /// against white: color = c*a + (1-a). Recover straight color.
+    /// Confirmed on arrows.psd (Photoshop CS4): no stored pixel falls below the
+    /// white matte, and where the layer composite agrees on alpha (64 and up) the
+    /// unmatted color matches it within 10 levels while the raw color is off by up
+    /// to 188. The reference reads the plane as straight color because its own
+    /// writer stores straight color (<c>merged_flatten_composite</c>,
+    /// .reference/src/psd/psd_channel_data.cpp); Patchy-written transparent
+    /// documents therefore decode slightly too light at soft edges here.
     /// </summary>
     private static void UnmatteWhite(PlanarImage image)
     {

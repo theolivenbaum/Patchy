@@ -685,6 +685,26 @@ internal static class PsdParser
             }
         }
 
+        // A legacy 'vscg' block on a shape (vector mask plus vstk) without SoCo/GdFl/PtFl
+        // is the shape's paint: the fill when vstk enables filling, else the stroke's
+        // fallback paint (reference psd_document_io.cpp, legacy_vector_content). Either
+        // way the layer is a shape and renders from its path.
+        if (layer.Kind == PsdLayerKind.Pixel && layer.VectorMask is not null && layer.VectorStroke is { } vectorStroke
+            && layer.GetTaggedBlock("vscg") is { Data.Length: > 8 } vscg)
+        {
+            var key = DecodeLatin1(vscg.Data.Span[..4]);
+            if (FillKeys.Contains(key) && TryReadDescriptor(vscg.Data, skip: 4) is { } paint)
+            {
+                layer.Kind = PsdLayerKind.Fill;
+                if (vectorStroke.FillEnabled)
+                {
+                    layer.ContentKey = key;
+                    layer.FillDescriptor = paint;
+                    layer.FillColor = key == "SoCo" ? paint.GetColor("Clr ") : null;
+                }
+            }
+        }
+
         if (layer.SectionType is PsdSectionType.OpenFolder or PsdSectionType.ClosedFolder)
         {
             layer.Kind = PsdLayerKind.Group;

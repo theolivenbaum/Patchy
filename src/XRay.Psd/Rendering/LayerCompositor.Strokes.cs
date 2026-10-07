@@ -18,6 +18,20 @@ internal sealed partial class LayerCompositor
 
     private readonly HashSet<PsdLayer> _strokedShapes = [];
 
+    private readonly Dictionary<PsdLayer, ShapePlanes> _shapePlanes = [];
+
+    /// <summary>
+    /// The extra planes of a shape rendered here, each over the layer's pixel bounds
+    /// (reference <c>ShapeRasterResult</c>). <see cref="Fill"/> and <see cref="Stroke"/>
+    /// are the split planes interior overlays need: the overlays cover the fill only and
+    /// the stroke re-composites above them. They exist when both paint and the stroke
+    /// blends Normal (a non-Normal stroke folds against the fill during the bake).
+    /// <see cref="Matte"/> is the effect silhouette: the layer with alpha raised to the
+    /// fill and stroke coverage, kept only when a gradient or pattern fill made the two
+    /// differ.
+    /// </summary>
+    private sealed record ShapePlanes(PlanarImage? Fill, PlanarImage? Stroke, PlanarImage? Matte);
+
     /// <summary>Whether the layer's pixels already carry its path coverage (a stroked or fill-disabled shape).</summary>
     private bool ShapeOwnsVectorMask(PsdLayer layer) =>
         layer.VectorStroke is not null && LayerPixels(layer) is not null && _strokedShapes.Contains(layer);
@@ -55,14 +69,18 @@ internal sealed partial class LayerCompositor
         var width = domain.Width;
         var shapeBounds = path.Subpaths.Count > 0 ? path.Bounds.Intersect(_canvas) : _canvas;
 
+        // Density shows the fill everywhere at (255 - density) / 255, the vector-mask rule.
+        float[]? fillCoverage = null;
         if (fillOn && PaintContent(layer, layer.ContentKey, layer.FillDescriptor, domain, shapeBounds) is { } fill)
         {
-            // Density shows the fill everywhere at (255 - density) / 255, the vector-mask rule.
+            fillCoverage = new float[image.A.Length];
+            fillCoverage.AsSpan().Fill(1f);
             var coverage = MaskSampler.FromVectorMask(path, domain, layer.VectorMaskDensity, 0, domain);
             for (var y = domain.Top; y < domain.Bottom; y++)
             {
                 var o = fill.RowOffset(y, domain.Left);
-                coverage?.MultiplyRow(y, domain.Left, fill.A.AsSpan(o, width));
+                coverage?.MultiplyRow(y, domain.Left, fillCoverage.AsSpan(o, width));
+                BlendKernels.MultiplyInPlace(fill.A.AsSpan(o, width), fillCoverage.AsSpan(o, width));
             }
 
             fill.R.AsSpan().CopyTo(image.R);
@@ -71,33 +89,91 @@ internal sealed partial class LayerCompositor
             fill.A.AsSpan().CopyTo(image.A);
         }
 
+        var fillPaints = fillCoverage is not null && fillCoverage.AsSpan().IndexOfAnyExcept(0f) >= 0;
+        PlanarImage? fillPlane = null;
+        PlanarImage? strokePlane = null;
+        float[]? strokeCoverage = null;
         if (strokeOn)
         {
-            CompositeStroke(image, layer, path, stroke, strokePaint);
+            // Split planes for interior overlays (reference rasterize_vector_shape, split_planes).
+            var split = fillPaints && stroke.BlendMode == PsdBlendMode.Normal;
+            fillPlane = split ? image.Clone() : null;
+            strokePlane = split ? new PlanarImage(domain) : null;
+            strokeCoverage = CompositeStroke(image, layer, path, stroke, strokePaint, strokePlane);
+            if (strokeCoverage is null)
+            {
+                fillPlane = strokePlane = null;
+            }
+        }
+
+        // The effect silhouette of a gradient or pattern fill: coverage, not painted alpha
+        // (.reference/docs/layer-effects-render.md, "Effect silhouette of shape layers").
+        PlanarImage? matte = null;
+        if (fillCoverage is not null && layer.ContentKey is "GdFl" or "PtFl")
+        {
+            matte = image.Clone();
+            var fillDiffers = RaiseAlpha(matte.A, fillCoverage);
+            var differs = fillDiffers | (strokeCoverage is not null && RaiseAlpha(matte.A, strokeCoverage));
+            if (fillDiffers && fillPlane is not null)
+            {
+                // Overlays cover the fill's whole coverage too.
+                RaiseAlpha(fillPlane.A, fillCoverage);
+            }
+
+            matte = differs ? matte : null;
         }
 
         if (reach > 0)
         {
             image = FeatherShape(image, radii, _canvas);
+            fillPlane = fillPlane is null ? null : FeatherShape(fillPlane, radii, _canvas);
+            strokePlane = strokePlane is null ? null : FeatherShape(strokePlane, radii, _canvas);
+            matte = matte is null ? null : FeatherShape(matte, radii, _canvas);
+        }
+
+        if (fillPlane is not null || matte is not null)
+        {
+            _shapePlanes[layer] = new ShapePlanes(fillPlane, strokePlane, matte);
         }
 
         _strokedShapes.Add(layer);
         return image;
     }
 
-    private void CompositeStroke(PlanarImage image, PsdLayer layer, VectorPath path, VectorStrokeStyle stroke, (string? Key, Descriptor? Content) paint)
+    /// <summary>Raises <paramref name="alpha"/> to <paramref name="coverage"/>; true when any value rose.</summary>
+    private static bool RaiseAlpha(float[] alpha, float[] coverage)
+    {
+        var raised = false;
+        for (var i = 0; i < alpha.Length; i++)
+        {
+            if (coverage[i] > alpha[i])
+            {
+                alpha[i] = coverage[i];
+                raised = true;
+            }
+        }
+
+        return raised;
+    }
+
+    /// <summary>
+    /// Paints the stroke band over <paramref name="image"/>, optionally also writing the
+    /// standalone stroke plane (paint color, coverage times paint alpha times stroke
+    /// opacity). Returns the band's coverage over the image domain, or null when it paints nothing.
+    /// </summary>
+    private float[]? CompositeStroke(PlanarImage image, PsdLayer layer, VectorPath path, VectorStrokeStyle stroke, (string? Key, Descriptor? Content) paint, PlanarImage? strokePlane)
     {
         var (coverage, rect) = VectorStroker.Rasterize(path, stroke, image.Bounds);
         var painted = TrimmedBounds(coverage, rect);
         if (painted.IsEmpty)
         {
-            return;
+            return null;
         }
 
         // Aligned gradients span the stroke's own painted bounds.
         if (PaintContent(layer, paint.Key, paint.Content, painted, painted) is not { } content)
         {
-            return;
+            return null;
         }
 
         var mode = stroke.BlendMode is PsdBlendMode.PassThrough or PsdBlendMode.Dissolve ? PsdBlendMode.Normal : stroke.BlendMode;
@@ -112,6 +188,13 @@ internal sealed partial class LayerCompositor
             content.A.AsSpan(s, width).CopyTo(alpha);
             BlendKernels.MultiplyInPlace(alpha, coverage.AsSpan(c, width));
             BlendKernels.Scale(alpha, opacity);
+            if (strokePlane is not null)
+            {
+                content.R.AsSpan(s, width).CopyTo(strokePlane.R.AsSpan(t, width));
+                content.G.AsSpan(s, width).CopyTo(strokePlane.G.AsSpan(t, width));
+                content.B.AsSpan(s, width).CopyTo(strokePlane.B.AsSpan(t, width));
+                alpha.AsSpan().CopyTo(strokePlane.A.AsSpan(t, width));
+            }
 
             // Non-Normal stroke modes blend against the fill within the same raster.
             BlendKernels.CompositeRow(
@@ -120,11 +203,23 @@ internal sealed partial class LayerCompositor
                 image.R.AsSpan(t, width), image.G.AsSpan(t, width), image.B.AsSpan(t, width), image.A.AsSpan(t, width),
                 clipMode: false);
         }
+
+        var domainCoverage = new float[image.A.Length];
+        var bandWidth = painted.Width;
+        for (var y = painted.Top; y < painted.Bottom; y++)
+        {
+            coverage.AsSpan(((y - rect.Top) * rect.Width) + (painted.Left - rect.Left), bandWidth)
+                .CopyTo(domainCoverage.AsSpan(image.RowOffset(y, painted.Left), bandWidth));
+        }
+
+        return domainCoverage;
     }
 
     /// <summary>
     /// The stroke paint: <c>strokeStyleContent</c>, or the legacy <c>vscg</c> block (content
-    /// key, then a versioned descriptor) for stroke-only shapes that omit it.
+    /// key, then a versioned descriptor) for stroke-only shapes that omit it. With filling
+    /// on, <c>vscg</c> is the fill's paint and never the stroke's (reference
+    /// <c>psd_document_io.cpp</c>, legacy_vector_content).
     /// </summary>
     private static (string? Key, Descriptor? Content) StrokePaint(PsdLayer layer, VectorStrokeStyle stroke)
     {
@@ -133,7 +228,7 @@ internal sealed partial class LayerCompositor
             return (stroke.ContentKey, stroke.Content);
         }
 
-        if (layer.GetTaggedBlock("vscg") is { Data.Length: > 8 } legacy)
+        if (!stroke.FillEnabled && layer.GetTaggedBlock("vscg") is { Data.Length: > 8 } legacy)
         {
             var key = PsdParser.DecodeLatin1(legacy.Data.Span[..4]);
             if (key is "SoCo" or "GdFl" or "PtFl" && PsdParser.TryReadDescriptor(legacy.Data, skip: 4) is { } descriptor)

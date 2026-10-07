@@ -44,6 +44,13 @@ internal sealed partial class LayerCompositor
 
         public MaskSampler? LayerMask { get; init; }
 
+        /// <summary>
+        /// The matte is the shape's coverage rather than the pixels' alpha (a gradient or
+        /// pattern fill that is transparent inside its shape): overlays and satin then
+        /// paint as passes over the matte instead of folding into the layer's color.
+        /// </summary>
+        public bool HasEffectMatte { get; init; }
+
         /// <summary>Pass-through groups fade their whole result afterwards, so their effects draw at full strength.</summary>
         public float? OpacityOverride { get; init; }
 
@@ -143,21 +150,57 @@ internal sealed partial class LayerCompositor
         }
 
         var layerMask = LayerMasks(layer, domain);
+
+        // Shape and fill layers key their effects off the shape's coverage, not the
+        // painted alpha of a gradient or pattern fill (reference effect_matte_source_for_render).
+        var ownPixels = layer.Kind == PsdLayerKind.Fill && ReferenceEquals(source, LayerPixels(layer));
+        var shapeMatte = ownPixels && _shapePlanes.TryGetValue(layer, out var planes) ? planes.Matte : null;
+        var raiseToCoverage = ownPixels && shapeMatte is null && !ShapeOwnsVectorMask(layer) && !fx.MaskHidesEffects
+            && layer.ContentKey is "GdFl" or "PtFl" && (layer.VectorStroke?.FillEnabled ?? true);
+        var matte = MatteOf(shapeMatte ?? source, domain, fx.MaskHidesEffects ? null : layerMask, raiseToCoverage, out var raised);
+        // When nothing rose the two mattes are equal (alpha is 1 wherever the masks show it).
+        var hasEffectMatte = shapeMatte is not null || raised;
+        return new StyledLayer { Layer = layer, Effects = fx, Source = source, Domain = domain, Matte = matte, LayerMask = layerMask, OpacityOverride = opacityOverride, HasEffectMatte = hasEffectMatte };
+    }
+
+    /// <summary>
+    /// The alpha of <paramref name="image"/> over <paramref name="domain"/> times the layer
+    /// mask. With <paramref name="fullAlpha"/> the pixels count as opaque inside their
+    /// bounds, so the masks (the shape's vector mask among them) alone give the coverage;
+    /// <paramref name="raised"/> reports whether that differs from the painted alpha.
+    /// </summary>
+    private static float[] MatteOf(PlanarImage image, PsdRect domain, MaskSampler? layerMask, bool fullAlpha, out bool raised)
+    {
+        raised = false;
         var matte = new float[domain.Width * domain.Height];
-        var inner = bounds.Intersect(domain);
+        var inner = image.Bounds.Intersect(domain);
         var row = new float[Math.Max(1, inner.Width)];
         for (var y = inner.Top; y < inner.Bottom; y++)
         {
-            source.A.AsSpan(source.RowOffset(y, inner.Left), inner.Width).CopyTo(row);
-            if (!fx.MaskHidesEffects)
+            var alpha = image.A.AsSpan(image.RowOffset(y, inner.Left), inner.Width);
+            var span = row.AsSpan(0, inner.Width);
+            if (fullAlpha)
             {
-                layerMask?.MultiplyRow(y, inner.Left, row.AsSpan(0, inner.Width));
+                span.Fill(1f);
+            }
+            else
+            {
+                alpha.CopyTo(span);
             }
 
-            row.AsSpan(0, inner.Width).CopyTo(matte.AsSpan(((y - domain.Top) * domain.Width) + (inner.Left - domain.Left)));
+            layerMask?.MultiplyRow(y, inner.Left, span);
+            if (fullAlpha && !raised)
+            {
+                for (var i = 0; i < span.Length && !raised; i++)
+                {
+                    raised = alpha[i] < 1f && span[i] > 0f;
+                }
+            }
+
+            span.CopyTo(matte.AsSpan(((y - domain.Top) * domain.Width) + (inner.Left - domain.Left)));
         }
 
-        return new StyledLayer { Layer = layer, Effects = fx, Source = source, Domain = domain, Matte = matte, LayerMask = layerMask, OpacityOverride = opacityOverride };
+        return matte;
     }
 
     private void CompositeStyledPixels(PlanarImage target, PsdLayer layer, PlanarImage source, LayerEffects fx, MaskChain? masks, PsdBlendMode mode, bool clipMode, PlanarImage? gateBackdrop = null)
@@ -338,9 +381,18 @@ internal sealed partial class LayerCompositor
         // Photoshop computes: a Normal layer (or "Blend Interior Effects as Group")
         // at full Fill without Blend If. Otherwise they paint after the layer's own
         // blend, unscaled by Fill and ungated.
+        // A layer whose effect silhouette is wider than its alpha paints them as passes
+        // over that silhouette. On a stroked shape the overlays cover the fill plane only
+        // and the vector stroke re-composites above them (reference composite_pixel_layer,
+        // stroke_restamp; Blend If and clipping-run content keep the combined plane).
         var fold = styled.Fill >= 1f && (mode is PsdBlendMode.Normal || styled.Layer.BlendInteriorElements) && gate is null;
+        var split = gate is null && styled.Layer.Kind == PsdLayerKind.Fill && fx.Overlays.Any(o => o.Opacity > 0)
+            && ReferenceEquals(source, LayerPixels(styled.Layer))
+            && _shapePlanes.TryGetValue(styled.Layer, out var planes) && planes.Fill is not null && planes.Stroke is not null
+            ? planes : null;
+        var foldSatin = fold && !styled.HasEffectMatte;
         var satinPlanes = new List<(SatinEffect Satin, Plane Plane)>();
-        foreach (var satin in fold ? fx.Satins : [])
+        foreach (var satin in foldSatin ? fx.Satins : [])
         {
             if (satin.Opacity > 0)
             {
@@ -348,7 +400,7 @@ internal sealed partial class LayerCompositor
             }
         }
 
-        var overlays = fold ? fx.Overlays : [];
+        var overlays = foldSatin && split is null ? fx.Overlays : [];
         var overlayPaints = overlays.Select(o => OverlayPaint(styled, o)).ToList();
 
         var gradientBounds = MatteBounds(styled);
@@ -423,9 +475,54 @@ internal sealed partial class LayerCompositor
             CompositeLayerRow(target, y, region.Left, mode, r, g, b, alpha, styled.Opacity, styled.Fill, gate, gateBackdrop, clipMode);
         }
 
-        if (!fold)
+        if (!foldSatin || split is not null)
         {
-            RenderOverlayPasses(target, styled, masks, clipMode);
+            RenderOverlayPasses(target, styled, masks, clipMode, split?.Fill, includeSatin: !foldSatin);
+        }
+
+        if (split is not null)
+        {
+            RestampStroke(target, styled, split.Stroke!, mode, masks, clipMode);
+        }
+    }
+
+    /// <summary>
+    /// The vector stroke plane re-composited above the interior overlays with the base
+    /// pass's factors: masks, stroke knockout, opacity, Fill and the layer's blend mode
+    /// (reference "vector_stroke_over_overlays" in composite_pixel_layer).
+    /// </summary>
+    private void RestampStroke(PlanarImage target, StyledLayer styled, PlanarImage stroke, PsdBlendMode mode, MaskChain? masks, bool clipMode)
+    {
+        var region = stroke.Bounds.Intersect(target.Bounds);
+        if (region.IsEmpty)
+        {
+            return;
+        }
+
+        var width = region.Width;
+        var alpha = new float[width];
+        for (var y = region.Top; y < region.Bottom; y++)
+        {
+            var s = stroke.RowOffset(y, region.Left);
+            var row = stroke.A.AsSpan(s, width);
+            if (row.IndexOfAnyExcept(0f) < 0)
+            {
+                continue;
+            }
+
+            row.CopyTo(alpha);
+            styled.LayerMask?.MultiplyRow(y, region.Left, alpha);
+            for (var chain = masks; chain is not null; chain = chain.Next)
+            {
+                chain.Sampler.MultiplyRow(y, region.Left, alpha);
+            }
+
+            if (styled.Knockout is { } knockout)
+            {
+                BlendKernels.MultiplyInPlace(alpha, knockout.Row(y, region.Left, width));
+            }
+
+            CompositeLayerRow(target, y, region.Left, mode, stroke.R.AsSpan(s, width), stroke.G.AsSpan(s, width), stroke.B.AsSpan(s, width), alpha, styled.Opacity, styled.Fill, null, null, clipMode);
         }
     }
 
@@ -441,6 +538,8 @@ internal sealed partial class LayerCompositor
     /// Photoshop composites effect planes with burn-mode alpha folded into the color
     /// (toward white for Linear/Color Burn, toward black for Color Dodge) and blends at
     /// full coverage over opaque destination pixels; Dissolve becomes a coverage decision.
+    /// Over pixels that are not opaque the caller hands burn and dodge to
+    /// <see cref="SpecialFill.CompositeEffectRow"/> instead.
     /// </summary>
     private static void PrepareEffectColor(PsdBlendMode mode, float[] r, float[] g, float[] b, float[] a, ReadOnlySpan<float> destinationAlpha, int x0, int y, out PsdBlendMode effectiveMode)
     {
@@ -495,6 +594,7 @@ internal sealed partial class LayerCompositor
         var g = new float[width];
         var b = new float[width];
         var a = new float[width];
+        var chainRow = masks is null ? [] : new float[width];
         for (var y = region.Top; y < region.Bottom; y++)
         {
             plane.Row(y, region.Left, width).CopyTo(a);
@@ -521,11 +621,6 @@ internal sealed partial class LayerCompositor
                 styled.LayerMask?.MultiplyRow(y, region.Left, a);
             }
 
-            for (var chain = masks; chain is not null; chain = chain.Next)
-            {
-                chain.Sampler.MultiplyRow(y, region.Left, a);
-            }
-
             if (paint is null)
             {
                 r.AsSpan().Fill(color.R / 255f);
@@ -549,9 +644,38 @@ internal sealed partial class LayerCompositor
                 }
             }
 
+            // The group mask chain scales coverage after the effect color is resolved
+            // (the reference's masked target): the burn/dodge fold and Dissolve read the
+            // effect's own alpha.
+            var coverage = Span<float>.Empty;
+            if (masks is not null)
+            {
+                coverage = chainRow.AsSpan();
+                coverage.Fill(1f);
+                for (var chain = masks; chain is not null; chain = chain.Next)
+                {
+                    chain.Sampler.MultiplyRow(y, region.Left, coverage);
+                }
+            }
+
             var t = target.RowOffset(y, region.Left);
-            PrepareEffectColor(mode, r, g, b, a, target.A.AsSpan(t, width), region.Left, y, out var effectiveMode);
-            BlendKernels.CompositeRow(effectiveMode, r, g, b, a, target.R.AsSpan(t, width), target.G.AsSpan(t, width), target.B.AsSpan(t, width), target.A.AsSpan(t, width), clipMode, clipMode ? ClipCoverageRow(target, t, width) : default);
+            var dr = target.R.AsSpan(t, width);
+            var dg = target.G.AsSpan(t, width);
+            var db = target.B.AsSpan(t, width);
+            var da = target.A.AsSpan(t, width);
+            var clipRow = clipMode ? ClipCoverageRow(target, t, width) : default;
+            PrepareEffectColor(mode, r, g, b, a, da, region.Left, y, out var effectiveMode);
+            if (mode is PsdBlendMode.LinearBurn or PsdBlendMode.ColorBurn or PsdBlendMode.ColorDodge)
+            {
+                SpecialFill.CompositeEffectRow(mode, r, g, b, a, coverage, dr, dg, db, da, clipMode, clipRow);
+            }
+
+            if (!coverage.IsEmpty)
+            {
+                BlendKernels.MultiplyInPlace(a, coverage);
+            }
+
+            BlendKernels.CompositeRow(effectiveMode, r, g, b, a, dr, dg, db, da, clipMode, clipRow);
         }
     }
 
@@ -722,16 +846,22 @@ internal sealed partial class LayerCompositor
         }
     }
 
-    /// <summary>Overlays and satin as destination passes over the matte (pass-through groups cannot fold them).</summary>
-    private void RenderOverlayPasses(PlanarImage target, StyledLayer styled, MaskChain? masks, bool clipMode)
+    /// <summary>
+    /// Overlays and satin as destination passes over the matte (pass-through groups cannot
+    /// fold them). Overlays use the alpha of <paramref name="overlayAlpha"/> instead when
+    /// given (the fill plane of a stroked shape).
+    /// </summary>
+    private void RenderOverlayPasses(PlanarImage target, StyledLayer styled, MaskChain? masks, bool clipMode, PlanarImage? overlayAlpha = null, bool includeSatin = true)
     {
-        var matte = new Plane(styled.Domain, styled.Matte);
+        var matte = overlayAlpha is null
+            ? new Plane(styled.Domain, styled.Matte)
+            : new Plane(styled.Domain, MatteOf(overlayAlpha, styled.Domain, styled.Effects.MaskHidesEffects ? null : styled.LayerMask, false, out _));
         foreach (var overlay in styled.Effects.Overlays)
         {
             DrawEffect(target, styled, matte, overlay.Opacity * styled.Opacity, overlay.Color, overlay.Mode, masks, clipMode, null, OverlayPaint(styled, overlay));
         }
 
-        foreach (var satin in styled.Effects.Satins)
+        foreach (var satin in includeSatin ? styled.Effects.Satins : [])
         {
             var plane = SatinPlane(styled, satin);
             DrawEffect(target, styled, plane, satin.Opacity * styled.Opacity, satin.Color, satin.Mode, masks, clipMode, (x, y) => styled.MatteAt(x, y));

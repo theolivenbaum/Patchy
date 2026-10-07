@@ -141,36 +141,75 @@ internal static class SpecialFill
         var fillByte = (int)MathF.Round(fill * 255f, MidpointRounding.AwayFromZero);
         for (var i = 0; i < coverage.Length; i++)
         {
-            var c = Math.Clamp(coverage[i], 0f, 1f);
-            var effective = c * fill * opacity;
-            if (effective <= 0f)
+            CompositePixel(mode, sr[i], sg[i], sb[i], coverage[i], fill, fillByte, opacity, ref dr[i], ref dg[i], ref db[i], ref da[i], clipMode, clipCoverage.IsEmpty ? -1f : clipCoverage[i]);
+        }
+    }
+
+    /// <summary>
+    /// Effect pixels in Color Burn, Linear Burn and Color Dodge over a backdrop that is
+    /// not opaque: Photoshop's alpha fold describes only the overlap with the backdrop,
+    /// so the reference routes these pixels through the special-Fill split with the
+    /// effect alpha as Fill (<c>composite_effect_color</c> calling
+    /// <c>composite_special_fill_color(color, 1, alpha, 1, mode)</c>,
+    /// .reference/src/render/layer_compositor.hpp). Handles every pixel with
+    /// <c>alpha &gt; 0</c> whose destination alpha is below 1 and zeroes its alpha so a
+    /// following plain composite skips it. <paramref name="coverage"/> carries the
+    /// group mask chain (empty for none), which scales coverage, not Fill.
+    /// </summary>
+    public static void CompositeEffectRow(
+        PsdBlendMode mode,
+        ReadOnlySpan<float> sr, ReadOnlySpan<float> sg, ReadOnlySpan<float> sb, Span<float> alpha, ReadOnlySpan<float> coverage,
+        Span<float> dr, Span<float> dg, Span<float> db, Span<float> da,
+        bool clipMode, ReadOnlySpan<float> clipCoverage = default)
+    {
+        for (var i = 0; i < alpha.Length; i++)
+        {
+            var fill = Math.Clamp(alpha[i], 0f, 1f);
+            if (fill <= 0f || da[i] >= 1f)
             {
                 continue;
             }
 
-            var inside = clipCoverage.IsEmpty ? da[i] > 0f : clipCoverage[i] > 0f;
-            if (clipMode && !inside)
-            {
-                continue;
-            }
+            alpha[i] = 0f;
+            var fillByte = (int)MathF.Round(fill * 255f, MidpointRounding.AwayFromZero);
+            var c = coverage.IsEmpty ? 1f : coverage[i];
+            CompositePixel(mode, sr[i], sg[i], sb[i], c, fill, fillByte, 1f, ref dr[i], ref dg[i], ref db[i], ref da[i], clipMode, clipCoverage.IsEmpty ? -1f : clipCoverage[i]);
+        }
+    }
 
-            var destinationAlpha = clipMode ? 1f : Math.Clamp(da[i], 0f, 1f);
-            var overlap = c * opacity;
-            var outAlpha = effective + (destinationAlpha * (1f - effective));
-            var inverse = 1f / outAlpha;
-            dr[i] = Channel(mode, sr[i], dr[i], fillByte, effective, overlap, destinationAlpha) * inverse;
-            dg[i] = Channel(mode, sg[i], dg[i], fillByte, effective, overlap, destinationAlpha) * inverse;
-            db[i] = Channel(mode, sb[i], db[i], fillByte, effective, overlap, destinationAlpha) * inverse;
-            if (!clipMode)
-            {
-                da[i] = outAlpha;
-            }
-            else if (!clipCoverage.IsEmpty)
-            {
-                var clip = clipCoverage[i];
-                var normalized = Math.Min(da[i], clip) / clip;
-                da[i] = Math.Max(da[i], clip * (effective + (normalized * (1f - effective))));
-            }
+    // One pixel of the split; clipCoverage below 0 means none.
+    private static void CompositePixel(
+        PsdBlendMode mode, float sr, float sg, float sb, float coverage, float fill, int fillByte, float opacity,
+        ref float dr, ref float dg, ref float db, ref float da, bool clipMode, float clipCoverage)
+    {
+        var c = Math.Clamp(coverage, 0f, 1f);
+        var effective = c * fill * opacity;
+        if (effective <= 0f)
+        {
+            return;
+        }
+
+        var inside = clipCoverage < 0f ? da > 0f : clipCoverage > 0f;
+        if (clipMode && !inside)
+        {
+            return;
+        }
+
+        var destinationAlpha = clipMode ? 1f : Math.Clamp(da, 0f, 1f);
+        var overlap = c * opacity;
+        var outAlpha = effective + (destinationAlpha * (1f - effective));
+        var inverse = 1f / outAlpha;
+        dr = Channel(mode, sr, dr, fillByte, effective, overlap, destinationAlpha) * inverse;
+        dg = Channel(mode, sg, dg, fillByte, effective, overlap, destinationAlpha) * inverse;
+        db = Channel(mode, sb, db, fillByte, effective, overlap, destinationAlpha) * inverse;
+        if (!clipMode)
+        {
+            da = outAlpha;
+        }
+        else if (clipCoverage >= 0f)
+        {
+            var normalized = Math.Min(da, clipCoverage) / clipCoverage;
+            da = Math.Max(da, clipCoverage * (effective + (normalized * (1f - effective))));
         }
     }
 
