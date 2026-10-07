@@ -30,6 +30,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `tests/Patchy.Psd.Skia.Tests/` | Skia interop tests; also decodes the built-in PNG/JPEG output with Skia |
 | `tests/fixtures/psd/` | Committed PSD/PSB fixtures and Photoshop reference renders (`.bmp`) copied from `.reference/test-fixtures/psd` |
 | `docs/porting-map.md` | Which reference files each C# area came from, and what was deliberately left out |
+| `docs/rendering.md` | Compositor model, effect pipeline, calibration status |
 
 ## Commands
 
@@ -59,15 +60,6 @@ The survey writes `test-output/survey.txt` (layer compositor vs merged image vs 
 
 ## Rendering model (summary)
 
-`PsdDocument.Render()` defaults to `RenderSource.Auto`: the saved merged image when the version-info resource (1057) says it is real, else the layer compositor. The compositor works on straight-alpha float planes in document space and follows the reference semantics:
-
-- Source-over per the PDF/W3C formula with Photoshop's blend kernels (`BlendOps.cs`).
-- Pass Through groups composite into the live backdrop and fade toward a snapshot by group opacity. Other groups, and pass-through groups with Fill below 100%, isolate and merge with their mode, opacity and mask.
-- Clipping runs render into an isolated buffer seeded by the base; members blend at full strength inside the base coverage; the run merges with the base's mode. A hidden base hides the run.
-- Raster masks (default color outside the rect, density, gaussian feather as three box passes) and vector masks (Photoshop's baked plane when flagged, otherwise `PathRasterizer` with even-odd groups and Add/Subtract/Intersect/Xor between groups).
-- Solid-color fill layers synthesize their content when the file stores none.
-- Supported adjustments: Invert, Threshold, Posterize. Others are skipped. See TODO.md.
-- Layer effects (`lfx2`, `lfxs` on groups, `lmfx` multi-instance; `LayerCompositor.Effects.cs`): drop shadow and outer glow (spread dilation plus tent blur, Range gain, shape knockout) below the layer; gradient and color overlays and satin folded into the layer color when the layer is Normal (or `infx`) at full Fill, otherwise painted after the layer's blend; inner glow, inner shadow (interior mirror pipeline) and strokes (exact distance band on a 3x supersampled contour, outer share under the content, inner share over it, Overprint knockout, solid, gradient and Shape Burst paints) above it. Effects on clipping bases render around the merged base-plus-members content; styled groups isolate unless Pass Through. Burn and dodge effect modes fold alpha into color as Photoshop does. Bevel and emboss (`LayerCompositor.Bevel.cs`: Smooth tent or chisel distance-roof height field, contour, texture, gloss contour, calibrated Lambert split) render too; Stroke Emboss does not.
-- Patterns (`Patterns.cs`) decode from the global `Patt`/`Pat2`/`Pat3` blocks and feed pattern overlays, pattern fill layers (`PtFl`) and bevel textures; linked patterns anchor at the layer's `fxrp` point. Gradient fill layers (`GdFl`) use the center-chord span with eased two-stop ramps.
+`PsdDocument.Render()` defaults to `RenderSource.Auto`: the saved merged image when the version-info resource (1057) says it is real, else the layer compositor. The compositor works on straight-alpha float planes and follows the calibrated reference semantics for groups, clipping, masks, fills, adjustments and layer effects. The full model, effect order and calibration status are in [docs/rendering.md](docs/rendering.md); read it before touching `src/Patchy.Psd/Rendering/`.
 
 Accuracy status per fixture is in the survey output; `RenderingTests` pins the fixtures that already match Photoshop.
