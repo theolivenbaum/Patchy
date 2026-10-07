@@ -1,34 +1,16 @@
 * text=auto eol=lf
 
-*.bat text eol=crlf
-*.cmd text eol=crlf
-*.ps1 text eol=crlf
-*.sh text eol=lf
-
-*.cpp text
-*.h text
-*.hpp text
-*.cmake text
-CMakeLists.txt text
-*.json text
+*.cs text
+*.csproj text
+*.props text
+*.slnx text
 *.md text
-*.yml text
-*.yaml text
+*.json text
 
-*.8bf binary -eol
-*.asl binary -eol
-*.pat binary -eol
 *.psd binary -eol
 *.psb binary -eol
 *.png binary -eol
 *.jpg binary -eol
-*.jpeg binary -eol
-*.ico binary -eol
-*.icns binary -eol
-
-# Preserve vendored libheif source byte-for-byte apart from Patchy's documented
-# WebCodecs adapter changes; upstream files contain intentional whitespace quirks.
-src/formats/libheif/** -whitespace
-
-# Keep the upstream font license byte-for-byte, including its trailing spaces.
-third_party/fonts-web/nanum_gothic/OFL.txt -whitespace
+*.bmp binary -eol
+*.ttf binary -eol
+*.otf binary -eol

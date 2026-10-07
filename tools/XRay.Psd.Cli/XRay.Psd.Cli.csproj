@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>psdtool</AssemblyName>
+    <RootNamespace>XRay.Psd.Cli</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/XRay.Psd/XRay.Psd.csproj" />
+  </ItemGroup>
+</Project>

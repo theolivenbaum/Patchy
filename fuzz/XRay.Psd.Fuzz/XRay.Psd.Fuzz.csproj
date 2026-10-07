@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Coverage-guided fuzzing harness (SharpFuzz) for PsdDocument.Load, Render and
+    ExtractText. SharpFuzz is allowed here only; the core library stays
+    dependency-free. See the "Fuzzing" section of docs/testing.md.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>XRay.Psd.Fuzz</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SharpFuzz" Version="2.3.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/XRay.Psd/XRay.Psd.csproj" />
+  </ItemGroup>
+</Project>

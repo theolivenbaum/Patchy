@@ -1,72 +1,25 @@
-# Local dependency installs
-/.deps/
-
-# Checkout/developer-specific agent notes and remote build hosts (see AGENTS.md).
-# This repository is public: machine names, users, and credentials stay out of it.
-/agents_local.md
-/agents_secret.md
-# Local backups of signing keys and other secret material. Never commit anything from it.
-/local-secrets/
-# Leftovers an assistant could not delete itself, parked for Seth to remove.
-/ThingsToDelete/
-/scripts/remote/hosts.local.json
-
-# Testy compatibility-harness output and machine-local settings (see docs/testy.md)
-/testy/runs/
-/testy/cache/
-/testy/config.local.json
-/testy/corpus/
-__pycache__/
-
-# CMake and build output
-/build/
-/out/
-/install/
-/coverage/
-/test-artifacts/
-/local-test-fixtures/
-/Testing/
-/CMakeFiles/
-/CMakeCache.txt
-/CMakeUserPresets.json
-/cmake_install.cmake
-/CTestTestfile.cmake
-/DartConfiguration.tcl
-compile_commands.json
-*.ninja
-.ninja_*
-
-# IDE/editor state
-/.cache/
-/.vs/
-/.vscode/
-/.idea/
+# .NET build output
+bin/
+obj/
+artifacts/
+TestResults/
 *.user
 *.suo
-*.userosscache
-*.sln.docstates
+.vs/
+.vscode/
+.idea/
 
-# Logs
-*.log
+# Test and tool output
+/test-output/
+/local-test-fixtures/
+BenchmarkDotNet.Artifacts/
 
-# Compiler/linker products
-*.obj
-*.o
-*.a
-*.lib
-*.dll
-*.dylib
-*.so
-*.exe
-*.ilk
-*.pdb
-*.exp
-*.manifest
-*.app/
-*.dSYM/
+# Developer-local agent notes (see CLAUDE.md)
+/agents_local.md
+/agents_secret.md
 
-# OS noise
 .DS_Store
 Thumbs.db
-.claude
-/testy/public/
+
+# Agent worktrees and local Claude Code state
+/.claude/

@@ -1,140 +1,104 @@
-# Performance: the stress test and the rendering-performance rules
+# Performance
 
-Read before rendering or stress-harness work. `AGENTS.md` owns universal revision/repaint rules. The optional screen-resolution renderer is documented in [Dynamic Vector Preview](vector-preview.md).
+How decoding, rendering and encoding use threads and SIMD, how loading avoids copies, and how to measure. Read this before adding a hot loop or a parallel loop.
 
-## Profiling stress test (PATCHY 64 scene)
+## Benchmarks
 
-A built-in, deterministic performance harness: it closes all documents, builds the "PATCHY 64" retro desk scene, then widens the canvas 50% and builds the "C2 ARCADE" corner next to it, organizing layers into nested folders as it goes, timing 60 stable-id steps across paint/text/styles/filters/adjustments/move/interact/history/io/vector/smart, then writes reports. Entry points: Preferences > Application > Development (warning dialog, results dialog, scene left open) and `patchy.exe --stress-test[=quick|small|standard|huge] [--stress-report-dir <dir>]`, which skips the splash/update check AND the whole single-instance mechanism, runs, writes reports, and exits 0 (success) / 1 (failure or unsettled step) / 2 (bad preset token). Default preset is **quick (1024 px, about a minute)** for iteration; run **standard (4096 px, several minutes)** for full-scale measurements — the move outline-preview thresholds and the async full-refresh path only engage at standard and above. Implementation: `src/ui/main_window_stress_test.cpp` (`StressTestRunner`, a MainWindow friend), shared types in `src/ui/stress_test.hpp`.
+`benchmarks/XRay.Psd.Benchmarks` is a BenchmarkDotNet project (the only project that may reference BenchmarkDotNet). It is in the solution and builds with it.
 
-- Reports land in `%APPDATA%\Patchy\stress-reports\` as `stress-<timestamp>.{json,txt}` plus stable `stress-latest.{json,txt}` copies (agents: read `stress-latest.json`), alongside `stress-scene.png` and `stress-scene.psd`. The run must happen on a REAL screen for meaningful numbers; the offscreen `smoke` preset (hidden, 512 px) exists only for the `ui_stress_test_smoke_preset_writes_report` suite test.
-- The rating is 1000 x geometric mean of per-step baseline/actual over `kStepBaselines` in main_window_stress_test.cpp (>1000 = faster than baseline). To recalibrate: on the reference machine run the preset named in `kBaselineTag` (currently quick), paste the TXT report's suggested table over `kStepBaselines`, bump `kBaselineTag`. Step ids are diffed across runs and key the baselines — never rename one.
-- Move matrix (steps 29-33) pins the move-drag preview fallbacks: `RenderCacheDiagnostics` reports `move_proxy_previews` (drag latched the translated-snapshot proxy) and `move_outline_previews` (last-resort dashed outline), thresholds `kMoveOutlineDirtyAreaThreshold` / `kStyledMoveOutlineDirtyAreaThreshold` in canvas_widget_move.cpp. At standard size, steps 29/32 must report both counters 0 (live path) and steps 30/31 must report `move_proxy_previews == 1` with `move_outline_previews == 0`; per-step diagnostics deltas in the JSON show dirty-rect behavior (partial patches vs full refreshes). The scene's prop layers are cropped to their opaque pixels after painting (`tighten_layer_to_opaque`) because the move machinery sizes its work from RAW layer bounds — `add_layer()` buffers are full-canvas, which would push every drag over the proxy threshold.
-- Text sizes in the scenario are computed in PIXELS via the shared `text_pixels_to_points` (main_window_shared) — the size spin takes points, converted at the document's print PPI (default 300, not 96).
-- Scene steps that would otherwise commit dozens of tool strokes (key grid, scanlines, pixel art) write cells directly into the layer buffer under ONE undo snapshot and invalidate per cell — deliberate, because `push_undo_snapshot` copies the whole Document (~0.5 GB at 4096 px) per stroke commit. The runner trims `undo_stack` between steps for the same reason; the Huge preset still peaks at several GB.
-- History is byte-budgeted: every `record_history_push` runs `MainWindow::enforce_history_memory_budget`, a COW-aware pointer walk (`core/document_memory.hpp`) that evicts the oldest undo states across all sessions once their marginal bytes exceed `history_memory_budget_bytes()` (`ui/memory_info.hpp`: RAM/4 clamped to 512 MB-4 GB on desktop, 256 MB on wasm, `PATCHY_HISTORY_BUDGET_TEST_MB` test override), keeping at least `kMinUndoStatesUnderPressure` (3) states per session under the unchanged 40-state cap.
-- The composite checksum in the report is FNV-1a over the final flatten — comparable on one machine only (text AA varies across machines, and the strip-parallel renderer below makes it thread-count dependent too). A checksum change during optimization work means rendering changed, not just speed.
-- Adding a step: call `step("NN_id", "label", "category", body)` (or `fps_step` for drag phases) inside a phase, keep ids stable, add a `kStepBaselines` entry, and scale geometry through the `at()`/`motion_steps()` helpers so smoke stays fast. All user-facing strings via tr() and the catalogs ([localization.md](localization.md)); report content stays English (machine-readable).
-- Layer folders are created DURING construction: step 10 starts "Desk props", 12 "Boot screen", 45 "C2 Arcade" + its nested "Arcade cabinet", 47 "Arcade signage"; later steps insert into them by anchoring on a child via `activate_layer_for_insert`. Text layers always commit at the top of the ROOT stack (not above the active layer), so scripted text belonging to a folder is tucked in right after creation via `move_layer_into_folder`. Whole-scene overlays (vignette/grain) call `activate_top_layer` first or a stale row anchor drops them INSIDE whatever folder was last active.
-- Scene 2 (steps 44-59): step 44 widens the canvas 50% (`resize_canvas_and_layers`, anchor Left) and the arcade corner covers the post-harness features - shape-mode drags with gradient fills/strokes, subtract-combine booleans, pen/polygon/custom-shape/arrow-line work, a live appearance re-bake, a selection-to-work-path roundtrip (dismissed after, so the target-path overlay never lingers), filters behind halftone CRT glass, a smart object + Gaussian smart-filter commit (rasterized at the end so the later document-geometry ops stay legal), a flag-preset warp bake, and a full-scene PSD save+reload (overwrites `stress-scene.psd`, so the disk artifact is the complete two-scene document with lsct sections). Execution order is 01-41, 44-51, 57, 58, 52, 53, 59, 54, 55, 56, then 42/43 last, so the final composite captures both scenes; ids stay append-only, order is not part of the id contract (the retired `60_layer_folders` id is not reused). Scene-2 geometry uses `at()` fractions above 1.0.
-- Gotchas the scene-2 steps encode: the shape tools' persisted Shape|Path|Pixels mode means raster `draw_shape` must force `VectorToolMode::Pixels` for its drag; `activate_tool` syncs the options-bar vector fill/stroke mirrors FROM the active shape layer, so a scripted appearance must be set after the tool switch (and the user's mirrors are saved/restored around the vector steps); `add_layer` anchors on the layer-list ROW selection before the active layer, and an unblocked `clearSelection()` fires the selection handler which re-asserts the old active layer (see `activate_layer_for_insert`); `create_layer_folder_from_layers` keeps the ids' order as the folder's top-to-bottom child order, so scripted membership must be sorted by current stacking position first (see `group_layers_into_folder`); text layer names truncate at 24 chars, so long-text layers are targeted by captured id, never by name; a shape-tool release on the press's own document pixel is a click that opens the modal Create Shape dialog, and snapping (8 SCREEN px per axis) can collapse both ends of a small on-screen drag onto one target, so shape-tool drags use `shape_drag`, which zooms in first.
-- No scripted step may open a modal dialog: nothing answers it (a hang). The guard timer in `run()` dismisses any non-progress modal, warns with the step id, and fails the run.
-- `CanvasWidget::render_settled()` (public) reports "no recomposite pending or in flight"; the runner's settle loop = repaint() + pump until settled. Reuse it for any future "wait until the canvas is truly current" need instead of sleeping.
-- A progress dialog (`stressTestProgressDialog`, WindowModal) tracks the 60 steps; Cancel stops at the next step boundary, writes the partial report (`"cancelled": true`, exit code 1 from CLI), and leaves the partial scene document open and MODIFIED, unlike a completed run whose scene is marked saved.
-
-## Undo/redo restore
-
-Undo/redo restores go through `CanvasWidget::set_document_for_history_restore`, which keeps the previous frame + render diagnostics when the restored document has the same size (plain `set_document` dumps both). Together with the paint deferral below, history steps on big documents swap frames instead of flashing checkerboard. History-panel jumps (`jump_to_history_state`) rotate any number of states with pure moves and run the canvas/UI refresh tail once, diffing the pre-jump document against the final one, so a 20-state jump costs one repaint, not 20.
-
-## Smart invalidation and style-mask caching
-
-Undo/redo diffs the two history states per layer (globally-unique revisions + visibility; structure/document-level changes fall back to full) and invalidates only the changed effect-bounds region below 8 Mpx (`history_restore_changed_region`, main_window_history.cpp). The expensive per-effect style masks (EDT/spread/interior blurs) are cached across renders keyed by layer CONTENT revision with domains stored relative to the layer origin, so moves and patch renders reuse them (`StyleMaskProvider` in render/layer_compositor.hpp, LRU + in-flight latch in image_document_io.cpp; `PATCHY_STYLE_MASK_CACHE_OFF=1` disables). The LRU budget is `style_mask_cache_budget_bytes()` (memory_info.hpp): RAM/8 clamped to 256 MB-2 GB on desktop, 48 MB on wasm, `PATCHY_STYLE_MASK_BUDGET_TEST_MB` for tests. A fixed 256 MB thrashed on the 4000x2781 pinball poster (its masks total about 600 MB), so every render rebuilt every mask and strips serialized behind the latch: 19 s per full render, 9 s with the masks resident (September 2026). The commit side upholds this: a pure-translation move bumps ONLY render revisions (`translate_moved_layer_metadata` goes through Layer's render-only mutators, and the vector/smart writer dirty marks use `metadata_without_content_bump`), so masks and the baked styled-layer cache stay warm across move commits. Document-positioned caches (layer-panel content/mask thumbnails, the paths panel's transient layer-path row) therefore key on the RENDER revision. Channel-separable adjustments (Levels/Curves/Color Balance) composite through exact 256-entry LUTs (`build_adjustment_lut`); Hue/Saturation stays per-pixel. Cached-mask renders are only used where the legacy windowed domain equals the full domain (gate in DocumentStyleMaskProvider), so full-render bytes are unchanged — pinned compositor tests hold.
-
-## Reads must not bump layer revisions
-
-Layer's mutable accessors bump render/content revisions on ACCESS, so read-only code must go through const layers (`std::as_const`), or it silently invalidates every revision-keyed cache. Document::find_layer once bumped every visited layer per lookup (thousands per frame); its walk is now const + const_cast. Hunt regressions with `PATCHY_REV_TRACE=1` (stderr REVBUMP lines per accessor+layer).
-
-## Nothing O(layer pixels) may run per repaint
-
-`opaque_pixel_local_rect` (the Move tool's passive-box bounds) reaches paint through `move_transform_controls_rect` and used to rescan the whole alpha channel every frame - selecting a 70 Mpx layer made every zoom/pan step take about half a second. The shared `visible_alpha_local_bounds(const Layer&)` helper in `layer_render_utils.cpp` now serves the Move tool and alpha-aligned layer effects: a row scan with early exits and a bounded LRU keyed by the app-globally-unique PIXEL revision, with a per-key in-flight latch so parallel render strips do not duplicate a cold scan. Style edits do not change the pixel revision; mutable pixel access and `set_pixels` do. `PATCHY_ZOOM_TRACE=1` prints paint/zoom/view-changed phase timings over 2 ms to stderr, and `patchy_perf_tests.exe zoom` (env `PATCHY_PERF_ONSCREEN=1`, `PATCHY_PERF_ZOOM_BG=1` selects the tent's 70 Mpx BG layer, `PATCHY_PERF_ZOOM_SELECTION=1` adds marching ants) measures per-step latency on the PSBtest tent (~10-15 ms per step maximized; ~255-300 ms before the cache).
-
-## Interactive drag previews (Move and Free Transform)
-
-The move-drag proxy/base machinery, the display-resolution preview-scaled document, cache retention across drags, and the free-transform preview live in [interactive-previews.md](interactive-previews.md); read it before touching those paths. The universal rule stays here: a drag handler must never synchronously recomposite the document - previews render from bounded caches and full invalidations belong to the post-release async refresh. Commit-path bytes are untouched by the preview machinery by design (corpus digests and the transform-commit suites pin it), and the stress move matrix (steps 29-33) plus step `61_transform_drag_proxy` pin the latch counters.
-
-## Text edit sessions (August 2026)
-
-Three changes cut what an inline text session costs, none of which changes committed pixels:
-
-- **The edited layer is hidden only when its preview replaces it**, in the same
-  `document_changed_effect_bounds` call (`hide_text_editor_source_layer`).
-- **The expensive-style debounce keeps the last preview** instead of removing the preview layer for
-  `kExpensiveTextEditorPreviewDelayMs` (that was a per-keystroke insert/remove of a styled layer
-  plus two recomposites).
-- **Commit repaints are bounded** to the committed layer's effect bounds (`commit_text_editor` used
-  to end with a bare `document_changed()`).
-
-Do not read a single stress run as a measurement: text steps swing 50%+ run to run, and stale
-`kStepBaselines` can make a faster build look like a regression. Alternate builds, compare means.
-
-## Layer-panel rebuilds and selection
-
-The Layers panel's rules (three-pass rebuild order, no rebuild on canvas-driven selection of existing rows, viewport-bounded row masks) and their measured numbers live in [layer-panel.md](layer-panel.md). Profiling: `refresh_layer_list`, `set_active_layer_from_selection`, `restyle_layer_rows`, `update_layer_target_styles`, and `refresh_options_bar` log under `PATCHY_UI_PROFILE=1`, and `PATCHY_ZOOM_TRACE=1` adds the Move-tool press phases (`move_press.*`, including `handle_transform_start` for a passive-handle grab). `patchy_perf_tests.exe layerpanel` times the Quintavius rebuild, folder collapse/expand, and a Layer Style open/cancel round trip (af-spike/web_samples2; [SKIP] when absent); `manylayers` times a panel row click, a canvas auto-select click, and two Move-tool press/drag/release rounds on the 2056-layer Little-Everywhere-fixed.psd (local-test-fixtures/psd; [SKIP] when absent); `PATCHY_PERF_MANYLAYERS_PSD=<path>` points it at another file and `PATCHY_PERF_RENDER_PHASE=1` adds a timed full render (pair it with `PATCHY_RENDER_SINGLE_THREADED=1` so the sampler sees the compositor). `PATCHY_PERF_SAMPLER=1` samples 10 ms main-thread stacks per measured phase.
-
-Visibility sweeps use coalesced snapshot refreshes without blocking input.
-Cache retention, background Move preparation and queue contracts are in
-[interactive-previews.md](interactive-previews.md#visibility-render-waits).
-
-## Deep documents defer full recomposites (layer-count gate)
-
-A full recomposite can take seconds on a document with hundreds of layers even
-when its pixel area is tiny (the 622-layer card template is under 1 Mpx but
-composited ~5 s cold: dozens of styled layers recompute stroke EDT masks), and
-below the 8 Mpx pixel threshold that composite used to run synchronously inside
-`paintEvent`. `should_defer_full_refresh_to_async` therefore also engages at
-`kDeferFullRefreshMinLayers` (200, canvas_widget_render.cpp) - same
-previous-frame-async semantics as pixel-huge documents. With no same-size
-previous frame to show (first paint of a fresh session),
-`should_defer_first_render_to_async` kicks the async composite and paints
-checkerboard plus the processing spinner instead of freezing
-(`first_render_spinner_active` drives the overlay with no stored state);
-pixel-huge documents keep their historical synchronous first paint. Both gates
-are compile-time constants on purpose - tests need deterministic paint
-semantics, and nothing in the suites builds 200 layers.
-
-## Parallel strip rendering
-
-Full renders at 4 Mpx+ use horizontal strips (`render_document_rect`).
-`PATCHY_RENDER_SINGLE_THREADED=1` and tracing/profiling force sequential rendering.
-Fan-outs size their workers from `hardware_worker_threads()` (core/worker_budget.hpp): `hardware_concurrency()`, or `PATCHY_RENDER_THREADS=<n>` to emulate fewer cores (read once).
-Styled groups use their complete child silhouette; the bounded style-mask LRU
-shares it across strips and repaints, keyed by descendant render revisions.
-Transient geometry bypasses silhouette caching. Group effect domains stay complete
-outside the canvas too. Other windowed float masks can still differ by 1-2/255 at
-strip boundaries; retain sequential mode for their cross-run checksums.
-
-## Compositor row kernels, mask plane, and the byte-identity corpus (August 2026)
-
-The per-pixel general loop in `composite_pixel_layer` (render/layer_compositor.hpp) is the compositor's slow path: a layer falls off the integer scanline fast path the moment it has a mask, a non-Normal blend mode, or any advanced feature, and used to drop from ~860 Mpx/s to ~30 Mpx/s (measured sequentially on a 7 Mpx 4-layer PSD whose Screen/Multiply layers cost 216 ms and 168 ms each). Three changes attack this without changing a single output byte:
-
-- **Mask coverage plane.** `build_mask_coverage_plane` folds the raster and vector mask factors over the draw rect in one row-walked pass, replacing the per-pixel `layer_mask_alpha_for_render` call chain (which paid two bounds-validated `PixelBuffer::pixel()` calls per pixel). The plane's expressions keep `layer_mask_alpha_at`'s exact float operation order, so values are bit-identical; the general loop reads the plane for every masked layer on every target.
-- **`composite_blended_row` row kernel** (QImageCompositeTarget, image_document_io.cpp). When no per-pixel gate beyond coverage remains (no blend-if, satin, folded overlays, knockout, special fill, or backdrop pre-blend; Dissolve excluded), the base pass runs as a row walk whose arithmetic is a verbatim replica of `composite_color` + `composite_blended_rgb` (mode dispatch through the real `blend_rgb`). NEVER reuse `composite_source_row`'s integer math for such kernels: the integer and float paths round differently by design, and pinned bytes hold only because the replica keeps the exact float expression trees. The measured file dropped to 113 ms + 86 ms (566 ms to 371 ms sequential total).
-- **MSVC link-time optimization.** CMakeLists.txt owns Release flags (AGENTS.md); `/fp:precise` keeps corpus bytes unchanged. LTCG relinks dominate rebuild time.
-- **Float row kernels on the group and flatten targets** (August 2026). `IsolatedClipGroupTarget` (layer_compositor.hpp) and `Rgb8PixelBufferTarget` (compositor.cpp) expose `composite_blended_row`, so isolated/masked/non-passthrough groups, clip runs, and PSD flatten leave the general per-pixel loop for gate-free layers. Each kernel is a float-exact transcription of that target's `record_clip_coverage` + `composite_color` chain (the tier dispatch never calls `record_clip_coverage`, so the isolated kernel replicates it internally, including the frozen clip-matte gate and max-alpha update; the blend reads the CLAMPED destination alpha while the plane update reads the stored value). Neither target gets an integer `composite_source_row`: byte identity is against the float general loop, and tier-1-eligible layers fall through to the float kernel automatically (tier 1's conditions are a strict subset of tier 2's). The single-threaded corpus flatten (99 fixtures) dropped from 1.66 s to 1.37 s with zero digest changes.
-
-Guarding all of it, the **byte-identity corpus**: `composite_corpus_flatten_digests_are_stable` (tests/core/composite_corpus_tests.cpp) and `composite_corpus_render_digests_are_stable` plus the override-equivalence test (tests/ui/composite_render_tests.cpp) flatten/render every committed `test-fixtures/psd` document plus anything dropped into `local-test-fixtures/composite-corpus/`, single-threaded, and compare FNV-1a digests against the tracked baselines in `test-fixtures/psd/*-digests.txt` (plus a local overlay). Any compositor optimization must keep these green; after a DELIBERATE rendering change, delete the tracked files, rerun, and commit the diff. Isolated-group bounds are override-aware (`layer_render_bounds_for_render`): move/transform preview overrides no longer force full-clip isolation buffers, and the styled pass-through silhouette includes override-moved children.
-
-Known remaining slow-path costs for future tiers (validated ordering in the August 2026 optimization plan): `merge_layer_into` and the channel-restricted/`GroupMaskedTarget` wrappers (deliberately per-pixel; fusing their factors into a kernel mask row would change float association order), the three float divides per pixel (skipped only when the output alpha is exactly 1.0), exact-value SIMD for the row kernels, a thread pool replacing the per-strip `std::async` spawns, and display-resolution interactive compositing (composite previews at the current mip level; the general form of what the move/transform proxies do). GPU compositing stays deliberately unpursued: no scaffolding exists, byte identity with the CPU reference is effectively unachievable on GPU float paths, and a preview-only GPU tier should only be considered after the CPU tiers above are exhausted.
-
-## Vector-shape edits invalidate their effect rect, not the canvas (August 2026)
-
-Shape drag-out commits, combine-extend drags, Direct/Path Select anchor drags, vector-mask path edits, and the Shape Appearance preview all call `document_changed_effect_bounds(old ∪ new layer effect rect)` instead of the bare full-canvas `document_changed()` (main_window_vector.cpp, canvas_widget_vector_tools.cpp; combine-extend also downgraded `refresh_layer_list` to `refresh_layer_thumbnails`). Below the 8 Mpx async-defer threshold (and ALWAYS on wasm) each full invalidation was a synchronous full recomposite; quick stress: `46_shape_boolean` 7.4 -> 1.1 s, `48_custom_shapes` 5.9 -> 1.3 s, `45_arcade_shapes` 13.2 -> 6.7 s. New shape work must keep invalidations bounded. The anchor-drag re-bake still runs full-quality per move; a coarse-preview latch remains a future tier. The warp preview's patches-over-base structure is in [warp.md](warp.md).
-
-## Deferred full-refresh paint
-
-`paintEvent` defers a FULL recomposite to the fire-and-forget async refresh and keeps drawing the previous frame whenever `CanvasWidget::should_defer_full_refresh_to_async()` says so (cache dirty + same-size previous frame + no processing operation + document at or above the compile-time `kProcessingOverlayDirtyAreaThreshold`, 8 Mpx). Big documents no longer flash checkerboard on add-layer/undo/blend changes. Deliberately keyed on the compile-time constant (not the `PATCHY_PROCESSING_OVERLAY_MIN_PIXELS` override) so overlay-path tests keep their blocking semantics; sub-threshold documents render synchronously in paint exactly as before.
-
-## Headless wasm stress harness
-
-The harness page is committed as `scripts/wasm/stress-harness.html` (staged into the site by `build-wasm.bat` with the shared cache tag; production uploads exclude it, the beta upload ships it). It shims `requestAnimationFrame` onto `setTimeout` AND re-implements the global timers on a Web Worker (Chrome and Safari throttle a hidden tab's main-thread timers to ~1/s; worker messages are exempt), suppresses `<a download>` clicks (overriding `HTMLAnchorElement.prototype.click`, since the save path clicks an unattached anchor), swallows the post-exit ExitStatus unhandled rejection, replicates patchy.html.in's `buildWasmMemory` (same knobs and ladders; keep in sync), and offers four workloads via `?mode=`: `stress` (passes `arguments: ['--stress-test=<preset>', '--stress-report-dir', '/stressout']` to qtLoad and polls the report from MEMFS via the exported `FS`), `soak` (writes `scripts/wasm/memsoak.js` into MEMFS from a `preRun` hook and runs it via `--run-script`; iterations chain through setTimeout so telemetry ticks between rounds), `open` (sends `?file=` through the real browser-drop path and checks open plus source cleanup), and `idle`. The CLI workloads end through qtloader's exit funnel (August 2026): the CLI completion paths call `exit_cli_application` (ui/cli_exit.hpp), which on wasm shuts the Emscripten runtime down so `qt.onExit` fires and the harness records the `exited` terminal stage with the CLI exit code (crashes still report through the abort funnel). Before that helper, the bare `QCoreApplication::exit` parked the tab with a clean console the moment a run completed, which made soak mode look wedged mid-iteration: the telemetry seq froze right as the script finished (all iterations had run; see the exit rule in [wasm.md](wasm.md)). memsoak.js holds its run open for one trailing settle window so the last iteration's post-close sample lands before the exit. The first run of a new binary (or port) pays V8 tier-up and is discarded as warm-up; configs are compared in interleaved pairs on two ports, never sequentially (machine-load drift beats most effects).
-
-For the exact large-open regression, stage a hard link and the raw harness:
-
-```powershell
-New-Item -ItemType HardLink -Path build\wasm-release\wasm-open-fixture.psd -Target 'local-test-fixtures\psd\C2Kyoto Nintendo NES Cartridge Label Template (Front).psd'
-Copy-Item scripts\wasm\stress-harness.html build\wasm-release\stress-harness.html
-pwsh -File scripts\wasm\serve-app.ps1 8974
+```bash
+cd benchmarks/XRay.Psd.Benchmarks
+dotnet run -c Release -- --filter "*" --job short          # everything, quick pass
+dotnet run -c Release -- --filter "*ScalingBenchmarks*"    # one thread against all processors
+dotnet run -c Release -- --write-synthetic /tmp/big.psd    # save the generated document
 ```
 
-Open `http://localhost:8974/stress-harness.html?mode=open`. Pass means
-`open-passed` with `transferReleased: true`; `?timeout=` overrides 600000 ms.
-Remove both staged files and stop port 8974 afterward.
+| Class | Covers |
+|---|---|
+| `LoadBenchmarks` | `Load(byte[])`, `Load(Stream)`, `ExtractText` |
+| `FileLoadBenchmarks` | `Load(path)` read into an array, memory-mapped, and `LoadAsync` |
+| `RenderBenchmarks` | `GetMergedImage`, every layer's `GetPixels`, the layer compositor |
+| `EncodeBenchmarks` | `ToPng`, `ToJpeg` on a rendered document |
+| `ScalingBenchmarks` | compositor, merged decode, PNG and JPEG at one thread and at the processor count |
 
-Instrumentation on the page: an on-screen HUD (heap/used/cap/stage), 2 s `POST /memtest-sample` samples that `scripts/wasm/serve.py` appends to a JSONL (silently inert on plain Apache; the path avoids the word "telemetry", which content blockers kill), and a localStorage black box journaled synchronously at each load stage (memory-constructed, fetch, compile, qtload-start, loaded, running+Ns) so a browser memory kill, which fires no catchable event, is reported by the NEXT load as a banner with the death stage and last heap numbers. Three consecutive unclean ends gate the next boot behind a click so Safari's kill-then-reload loop cannot hammer a device. In-app numbers come from `globalThis.patchyMemStats` (ui/wasm_memory_telemetry.cpp, see [wasm-memory.md](wasm-memory.md)); the publisher is diagnostics opt-in (`?PATCHY_MEM_STATS=1`, implied by `?PATCHY_MEM_LOG=1`), the harness enables it automatically, and release visitors run without it.
+Inputs are committed fixtures (`qual_rca_pinout.psd` 1745x1158 with styled type layers, `photoshop-bevel-texture-clouds.psd`, `arrows.psd`) and a synthetic 4000x3000 document (`synthetic-4000x3000.psd`, about 270 MB): six full-canvas RLE layers in Normal, Multiply, Screen, Overlay, Soft Light and Hard Light with partial alpha, one raster mask, and an RLE merged image, all filled with gradients plus hashed noise. It is built in memory by the test suite's `PsdBuilder` (linked into the project), so nothing large is committed. Set `XRAY_PSD_FIXTURES` when running from outside the repository.
 
-## Safari/iOS memory diagnostics (mac build host)
+## Parallelism
 
-`scripts\remote\wasm-safari-memtest.ps1` runs a full measured Safari session on the mac build host from Windows: pushes the staged site plus helpers to `~/patchy-memtest/`, starts `scripts/wasm/serve.py` on port 8993 (COOP/COEP; localhost is a secure context, so the threaded build boots), drives Safari via `scripts/remote/safari-memtest.py`, and copies the results back to `build\memtest-results\<run-id>\` (samples.csv, telemetry JSONL, events.log, summary.json, webkit-log.txt on a kill). Modes: `-Mode stress|soak|idle` (harness page, unattended) and `-Mode interactive` (real patchy.html; Seth drives, the sampler records, Safari and the server stay up). `-Knobs 'PATCHY_WASM_MAX_MB=1024&PATCHY_WASM_POOL=8'` forwards the shell-page memory knobs for A/B runs without rebuilding.
+All parallel loops go through `Parallelism.For(count, costPerItem, body)` (`src/XRay.Psd/Parallelism.cs`); nothing calls `Parallel.For` directly. The rules that keep results bit-identical to a sequential run:
 
-The sampler tracks the number WebKit's kill policy watches: per-process `footprint` of the app's WebContent process (identified as the first new WebContent instance crossing 300 MB), plus Safari and the GPU process (canvas/IOSurface growth lands there, invisible to wasm-side numbers). Reading the curves: used grows while heap stays flat = in-app leak; heap steps up at workload peaks while used returns low = peak ratchet (wasm memory never shrinks); WebContent footprint grows while heap stays flat = browser-side growth; GPU process grows = canvas/IOSurface. The default `open` driver needs no setup and quits Safari via pkill afterwards. `-Driver webdriver` additionally polls `patchyMemStats` on the real patchy.html and detects kills via a page epoch sentinel; it needs a one-time `sudo safaridriver --enable` on the mac build host plus Safari > Develop > Developer Settings > Allow Remote Automation, and if an ssh-launched safaridriver cannot reach the window server, start `safaridriver -p 4723` once in a Terminal on the mac build host (the script attaches to a listener).
+- Items are independent: rows of a plane, lines of a separable blur, channels of a layer, layers to decode, MCU rows, deflate segments. A body writes only its own items and reads nothing another strip writes.
+- The math per item is the same code whatever the split; strips only decide which thread runs it.
+- Strip boundaries depend on the item count and cost, never on the thread count (at least 64 K work units per strip, at most 256 strips). Anything derived from the partition (the JPEG statistics strips) is the same on every machine.
+- Reductions are integer (JPEG symbol counts) or absent.
+- A loop inside another loop's strip runs inline, so nesting never oversubscribes.
+- An exception in a strip surfaces unwrapped (the lowest strip's), so `PsdFormatException` stays the only failure type for damaged input.
 
-iOS device runs use the beta deploy (`scripts\release\upload-wasm-to-rtsoft-beta.bat` publishes the same staged site plus the harness to https://www.rtsoft.com/patchy-beta/; an iPhone needs real https for SharedArrayBuffer, a LAN http server cannot boot the threaded build). Walk the memory knobs on the device against `stress-harness.html`; the black-box banner attributes deaths to a load stage. One-time device step: Settings > Apps > Safari > Advanced > Web Inspector ON (inspect from the mac build host's Safari Develop menu). After a death, fetch jetsam logs from the mac build host: `xcrun devicectl device copy from --device "<name>" --domain-type systemCrashLogs --source . --destination <dir>`, then read the newest JetsamEvent-*.ips: `per-process-limit` with a footprint near the chosen cap means the shared maximum was committed eagerly; `vm-pageshortage` well below limits means a transient spike (module compile or pool spawn).
+The degree comes from an ambient scope (`Parallelism.Use`, an `AsyncLocal`). `RenderOptions.MaxDegreeOfParallelism` sets it for `Render` (default: the processor count; 1 renders on the calling thread only). Encoders, `GetPixels` and `GetMergedImage` called directly use the processor count. Servers that render many documents at once may prefer `MaxDegreeOfParallelism = 1` and parallelism across documents.
+
+What runs in parallel:
+
+| Where | Unit |
+|---|---|
+| `LayerCompositor.PrefetchPixels` | every reachable layer's channel decode, before compositing (the compositor keeps every decoded layer for the whole render anyway, so peak memory does not grow) |
+| `PsdLayer.DecodePixels` | the color and alpha channels of one layer |
+| `ChannelCodec.DecodeRle` | rows (offsets from the row-count table first) |
+| `ChannelCodec.UndoPrediction`, `ToFloat` | rows |
+| `ColorSpaces` | Lab, indexed and 32-bit transfer conversions by pixel ranges; `IccSrgbTransform.Apply` by its existing chunks |
+| `LayerCompositor` | rows of `CompositePixels`, `MergeImage` and `ApplyAdjustment` |
+| `MaskSampler` | feather box passes by line |
+| `EffectMasks` | dilation rows, tent blur lines, box blur lines, distance transform columns and rows |
+| `PlanarImage.ToRgba`, `RgbaImage.Flatten` | rows |
+| `PngEncoder` | row filtering, then deflate segments |
+| `JpegEncoder` | color conversion, chroma downsampling, DCT and quantization by MCU row, symbol statistics |
+
+Still sequential: zlib inflate of one channel (one stream), the layer tree walk, effect passes in `LayerCompositor.Effects.cs`/`.Bevel.cs`/`.Strokes.cs` (only the `EffectMasks` helpers they call are parallel), path rasterization, and JPEG entropy coding.
+
+Contributor rules: an `IAdjustment.Apply` implementation is called concurrently for different rows and must keep no mutable state outside the call. `CompositeLayerRow` and anything it calls may touch only the row it is given. A new parallel loop needs a test that compares it with `Parallelism.Use(1)`; `ParallelismTests` runs every fixture with the strip threshold lowered to one item, so even small fixtures split every loop.
+
+## Vectorized loops
+
+Every vector path below matches its scalar formula bit for bit (the JIT does not fuse multiply-adds, and integer scans wrap the same way in any order), which `ParallelismTests` checks against scalar references.
+
+- `PlanarImage.ToRgba`: rounds the four planes and packs `r | g << 8 | b << 16 | a << 24` per 32-bit lane, zeroing fully transparent pixels.
+- Lab to sRGB: the `f^-1`, white point and matrix steps run on `Vector<double>` in the scalar operation order; the sRGB transfer (`Math.Pow`) stays per lane.
+- ZIP prediction: 8-bit and 16-bit rows (and the byte planes of 32-bit rows) undo the delta with a log-step prefix sum on `Vector128` (shuffles by 1, 2, 4, 8 lanes plus a broadcast carry); 16-bit words are byte-swapped in the same shuffle.
+- PNG filters: Average uses `(a & b) + ((a ^ b) >> 1)`, Paeth computes `|b - c|`, `|a - c|`, `|a + b - 2c|` on 16-bit lanes, and the filter score sums `|(sbyte)v|` on widened lanes. The encoder knows every raw byte, so neither filter has a serial dependency.
+- JPEG color conversion unpacks RGBA words into float lanes; `RgbaImage.IsOpaque` tests alpha four words at a time.
+
+## PNG output
+
+Rows are filtered in parallel into one buffer. When the filtered data exceeds 2 MiB it is deflated in segments of whole rows (about 1 MiB each, sized from the image alone) on separate threads; every segment but the last ends with a sync flush, so their concatenation is one valid deflate stream (the pigz layout), and the Adler-32 checksum is combined from the per-segment sums. Segments cannot reference data in the previous segment, which costs well under 1% in size. The bytes differ from the earlier single-stream output for large images but are identical for every degree of parallelism; smaller images still use one stream.
+
+## Loading
+
+- `Load(byte[])` and `Load(ReadOnlyMemory<byte>)` parse in place.
+- `Load(Stream)` reads a seekable stream from its position straight into one array of the remaining length (one copy, none extra); other streams fill pooled 1 MiB chunks that are copied once into an exact array.
+- `LoadAsync(path)` and `LoadAsync(stream)` read asynchronously (with cancellation) and then parse on the calling thread. Parsing touches only structure, so it is short.
+- `PsdLoadOptions.MemoryMap` (path overloads) maps the file read-only (`IO/PsdSource.cs`). Pages load when parsing or decoding touches them, so opening a large document reads its records and little else, and channel data stays on disk until a render decodes it. The document then owns the mapping: `PsdDocument` implements `IDisposable`, and reading pixel data after `Dispose` throws `ObjectDisposedException` (every span access checks). Disposing is a no-op for documents in memory.
+- Files larger than one array (2 GB and up) are always mapped, and the parser takes its windowed path (`PsdParser.ParseWindowed`): header, color mode data and resources parse from the first window, the layer and mask section is walked with 64-bit offsets, each channel's data becomes its own window at its file offset, and the global blocks after the layer info parse from one more window. `LoadingTests` runs every fixture through this path (threshold 0) and compares the result with the in-memory parse.
+
+Limits of the windowed path: a single channel larger than 2 GB reads as empty, the merged image decodes from at most 2 GB, and a 16/32-bit document whose `Lr16`/`Lr32` global block exceeds 2 GB loses its layers (the block is skipped). Rendering is limited separately by the canvas: `PlanarImage` holds whole-document float planes with an `int` pixel count, so documents above about 46000 x 46000 pixels cannot render, and memory use is 16 bytes per pixel per buffer. Tiling would lift both; see `TODO.md`.
+
+## Measurements
+
+October 2026, 4-core x64 container, .NET 10, BenchmarkDotNet `--job short --iterationCount 5`. The machine was shared with other builds (load average 14 to 26), so expect 10 to 30% noise; the baseline (commit `1edc804`) and the new code ran back to back. "All cores" is the default degree; "1 thread" is `MaxDegreeOfParallelism = 1` (encoders: `Parallelism.Use(1)`).
+
+| Operation | Document | Before | After, 1 thread | After, all cores |
+|---|---|---:|---:|---:|
+| Layer composite | synthetic 4000x3000 | 1495 ms | 1227 ms | 470 ms |
+| Layer composite | qual_rca_pinout | 87 ms | 65 ms | 78 ms |
+| Merged image decode | synthetic 4000x3000 | 220 ms | 173 ms | 118 ms |
+| Merged image decode | qual_rca_pinout | 37 ms | 28 ms | 22 ms |
+| Every layer's `GetPixels` | synthetic 4000x3000 | 1534 ms | | 710 ms |
+| Every layer's `GetPixels` | qual_rca_pinout | 63 ms | | 35 ms |
+| PNG encode | synthetic 4000x3000 | 4627 ms | 3192 ms | 1012 ms |
+| PNG encode | qual_rca_pinout | 805 ms | 648 ms | 199 ms |
+| JPEG encode (q90) | synthetic 4000x3000 | 1316 ms | 1181 ms | 773 ms |
+| JPEG encode (q90) | qual_rca_pinout | 142 ms | 129 ms | 78 ms |
+| `Load(Stream)` | qual_rca_pinout (6 MB) | 11.3 ms, 13.0 MB | | 6.5 ms, 7.1 MB |
+| `Load(Stream)` | synthetic (270 MB) | 120 ms, 530 MB | | 90 ms, 265 MB |
+| `Load(path)` | synthetic (270 MB) | | 102 ms | |
+| `Load(path)`, `MemoryMap` | synthetic (270 MB) | | 0.03 ms | |
+
+`Load(byte[])` and `ExtractText` are unchanged (about 1 ms and 0.1 ms on qual_rca_pinout; they never touch pixels). qual_rca_pinout's composite is dominated by its styled type layers, whose effect passes stay sequential, so it gains little from more threads. The PNG encoder allocates one filtered copy of the image (36.7 MB instead of 18.6 MB on qual_rca_pinout); the segmented stream was 0.06% larger on the synthetic document. JPEG output is byte-identical to before.
