@@ -12,6 +12,7 @@ TestResults/
 # Test and tool output
 /test-output/
 /local-test-fixtures/
+BenchmarkDotNet.Artifacts/
 
 # Developer-local agent notes (see CLAUDE.md)
 /agents_local.md

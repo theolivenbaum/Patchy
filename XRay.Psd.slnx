@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/XRay.Psd.Benchmarks/XRay.Psd.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/XRay.Psd.Skia/XRay.Psd.Skia.csproj" />
     <Project Path="src/XRay.Psd/XRay.Psd.csproj" />
