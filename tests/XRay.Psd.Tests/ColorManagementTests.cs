@@ -880,6 +880,41 @@ public sealed class ColorManagementTests
     }
 
     [Fact]
+    public void Dot_gain_gray_ramp_matches_photoshop()
+    {
+        // The reference pins its local gray-ramp-dotgain20.psd against Photoshop's Convert to
+        // Profile (within 2 levels); this builds the same 256-step ramp with a Dot Gain 20% stand-in.
+        var builder = new PsdBuilder { Width = 256, Height = 1, Mode = PsdColorMode.Grayscale };
+        builder.Resources.Add((ImageResourceIds.IccProfile, "", TestProfiles.DotGain20Like()));
+        var layer = new BuilderLayer { Name = "ramp", Rect = new PsdRect(0, 0, 256, 1) };
+        layer.Channels[-1] = PsdBuilder.Plane8(256, 1, 255);
+        layer.Channels[0] = PsdBuilder.Plane8(256, 1, (x, _) => (byte)x);
+        builder.Layers.Add(layer);
+        builder.MergedChannels.Add(PsdBuilder.Plane8(256, 1, (x, _) => (byte)x));
+        builder.Layers[0].Blocks.Add(("SoCo", SolidColorBlock("Grsc", ("Gry ", 50))));
+
+        var document = PsdDocument.Load(builder.Build());
+        var pixels = document.Layers[0].GetPixels()!;
+        var merged = document.GetMergedImage();
+        foreach (var (gray, srgb) in TestProfiles.DotGain20Pins)
+        {
+            var pixel = pixels.GetPixel(gray, 0);
+            Assert.InRange(pixel.R, srgb - 1, srgb + 1);
+            Assert.True(pixel.R == pixel.G && pixel.G == pixel.B);
+            Assert.Equal(pixel, merged.GetPixel(gray, 0));
+        }
+
+        // A 50% 'Grsc' color converts like the 128 pixel: Photoshop's 20% dot gain at mid tone.
+        Assert.Equal(pixels.GetPixel(128, 0), document.Layers[0].FillColor);
+        var previous = -1;
+        for (var x = 0; x < 256; x++)
+        {
+            Assert.True(pixels.GetPixel(x, 0).R >= previous);
+            previous = pixels.GetPixel(x, 0).R;
+        }
+    }
+
+    [Fact]
     public void Thirty_two_bit_rgb_converts_linear_primaries()
     {
         // 32-bit data is linear light: only the colorant matrix applies.

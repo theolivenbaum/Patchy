@@ -51,6 +51,66 @@ internal static class TestProfiles
         .Add("kTRC", IccBuilder.Gamma(2.2))
         .Build();
 
+    /// <summary>
+    /// Photoshop's sRGB rendering of a gray ramp in a document with Dot Gain 20%
+    /// embedded (gray level, sRGB level): the reference's
+    /// <c>psd_gray_ramp_dotgain20_matches_photoshop_srgb_if_available</c> pins.
+    /// </summary>
+    public static readonly (int Gray, int Srgb)[] DotGain20Pins =
+    [
+        (0, 0), (16, 22), (32, 46), (48, 66), (64, 85), (80, 102), (96, 119), (112, 134), (128, 149),
+        (144, 164), (160, 178), (176, 192), (192, 205), (208, 218), (224, 231), (240, 243), (255, 255),
+    ];
+
+    /// <summary>
+    /// A stand-in for Adobe's "Dot Gain 20%" (which may not be redistributed): a v2
+    /// output-class gray profile whose 256-entry <c>kTRC</c> is the monotone cubic
+    /// through the luminance of <see cref="DotGain20Pins"/>, so 50% gray carries
+    /// 20% dot gain (128 shows as 149).
+    /// </summary>
+    public static byte[] DotGain20Like()
+    {
+        var x = DotGain20Pins.Select(p => p.Gray / 255.0).ToArray();
+        var y = DotGain20Pins.Select(p => SrgbToLinear(p.Srgb / 255.0)).ToArray();
+        var n = x.Length;
+        var secant = new double[n - 1];
+        for (var i = 0; i < n - 1; i++)
+        {
+            secant[i] = (y[i + 1] - y[i]) / (x[i + 1] - x[i]);
+        }
+
+        // Fritsch-Carlson tangents keep the curve monotone between the pins.
+        var tangent = new double[n];
+        tangent[0] = secant[0];
+        tangent[n - 1] = secant[n - 2];
+        for (var i = 1; i < n - 1; i++)
+        {
+            tangent[i] = secant[i - 1] * secant[i] <= 0 ? 0 : 2 / ((1 / secant[i - 1]) + (1 / secant[i]));
+        }
+
+        var table = new double[256];
+        for (var level = 0; level < 256; level++)
+        {
+            var t = level / 255.0;
+            var k = Math.Min(n - 2, Array.FindLastIndex(x, v => v <= t));
+            var h = x[k + 1] - x[k];
+            var s = (t - x[k]) / h;
+            var h00 = (2 * s * s * s) - (3 * s * s) + 1;
+            var h10 = (s * s * s) - (2 * s * s) + s;
+            var h01 = (-2 * s * s * s) + (3 * s * s);
+            var h11 = (s * s * s) - (s * s);
+            table[level] = (h00 * y[k]) + (h10 * h * tangent[k]) + (h01 * y[k + 1]) + (h11 * h * tangent[k + 1]);
+        }
+
+        return new IccBuilder { DeviceClass = "prtr", ColorSpace = "GRAY" }
+            .Add("desc", IccBuilder.Description("Test Dot Gain 20%"))
+            .Add("wtpt", IccBuilder.Xyz(0.9642, 1.0, 0.8249))
+            .Add("kTRC", IccBuilder.Table(table))
+            .Build();
+    }
+
+    private static double SrgbToLinear(double v) => v <= 0.04045 ? v / 12.92 : Math.Pow((v + 0.055) / 1.055, 2.4);
+
     /// <summary>A gray profile whose darkest value is 5% luminance (a lifted black, for black point compensation).</summary>
     public static byte[] GrayLiftedBlack() => new IccBuilder { ColorSpace = "GRAY" }
         .Add("desc", IccBuilder.Description("Test Lifted Gray"))
