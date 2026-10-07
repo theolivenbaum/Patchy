@@ -1,0 +1,23 @@
+# Porting map
+
+Where each part of the C# library came from in the reference tree (`.reference/`), and what was left behind. Paths on the left are under `src/Patchy.Psd/`.
+
+| C# | Reference | Notes |
+|---|---|---|
+| `IO/BigEndianReader.cs` | `src/psd/psd_binary.cpp`, `psd_io_common.cpp` | Pascal strings decode as Latin-1; layers prefer the `luni` Unicode name. |
+| `IO/ChannelCodec.cs` | `src/psd/psd_channel_data.cpp` | Damaged rows decode as zeros instead of failing the file. 32-bit prediction splits each row into four byte planes before the delta. |
+| `PsdParser.cs` | `src/psd/psd_document_io.cpp`, `psd_layer_records.cpp` | Same mask-data rules: the 36+ byte form carries the real user mask right after the flags; `(flags & 0x18) == 0x10` means parameters only. Length width is chosen by signature (`8B64`) or by key in PSB files. Global blocks are padded to 4 bytes. |
+| `PsdParser.ReadLinkedFiles` | `src/psd/psd_smart_objects.cpp` (`parse_link_element`) | Only the fields text extraction and rendering need. |
+| `Layers/VectorPath.cs` | `src/psd/psd_vector.cpp` (`parse_records`) | Continuation contours (operation 0xFFFF) inherit the group operation; CS4-era records fall back to Xor. |
+| `Rendering/PathRasterizer.cs` | `src/core/vector_raster.cpp` | New scanline rasterizer (16 sub-scanlines, exact horizontal coverage). Group combination and subtract-first rules match the reference. |
+| `Rendering/BlendOps.cs` | `src/core/blend_math.cpp` | Float versions of the 8-bit kernels, including Photoshop's Linear Light (-256) and Pin Light offsets and the Burn/Dodge/Divide 0/0 corners. |
+| `Rendering/BlendKernels.cs` | `composite_blended_rgb`, `IsolatedClipGroupTarget` | Clip mode reproduces the frozen clip-group semantics without Blend If. |
+| `Rendering/LayerCompositor.cs` | `src/render/layer_compositor.hpp` (`composite_sibling_layers`, `composite_layer`, `composite_pass_through_group`) | No effects, Blend If, channel restrictions or special Fill yet. |
+| `Rendering/MaskSampler.cs` | `src/core/layer_render_utils.cpp` (`mask_feather_box_radii`) | Density lifts the floor: `m * d + (1 - d)`. |
+| `Rendering/Adjustments.cs` | `src/core/adjustment_layer.cpp` | Threshold uses integer 30/59/11 luma; Posterize uses floor buckets. |
+| `Descriptors/Descriptor.cs` | `src/psd/psd_descriptor.cpp` | Depth-limited to 64 levels like the reference. |
+| `Text/EngineData.cs` | `src/psd/engine_data.cpp` | Read-only tree (the reference also round-trips whitespace for writing). |
+| `Text/TextLayerInfo.cs` | `src/psd/psd_text_read.cpp` | Text from the descriptor `Txt `; runs and fonts from EngineData. |
+| `Text/LegacyText.cs` | `src/psd/psd_text_legacy.cpp`, `docs/psd-legacy-text.md` | Text and fonts only. |
+
+Not ported (out of scope for a reader/renderer, or deferred in TODO.md): the Qt UI, brushes and tools, filters and smart-filter re-rendering, the PSD writer, ASL/ABR/PAT/GRD preset files, other image formats, scripting, plug-ins, and color management.

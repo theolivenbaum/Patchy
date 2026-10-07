@@ -1,0 +1,21 @@
+# .NET build output
+bin/
+obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+
+# Test and tool output
+/test-output/
+/local-test-fixtures/
+
+# Developer-local agent notes (see CLAUDE.md)
+/agents_local.md
+/agents_secret.md
+
+.DS_Store
+Thumbs.db

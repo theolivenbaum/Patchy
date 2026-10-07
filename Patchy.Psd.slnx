@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Patchy.Psd.Skia/Patchy.Psd.Skia.csproj" />
+    <Project Path="src/Patchy.Psd/Patchy.Psd.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Patchy.Psd.Skia.Tests/Patchy.Psd.Skia.Tests.csproj" />
+    <Project Path="tests/Patchy.Psd.Tests/Patchy.Psd.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Patchy.Psd.Cli/Patchy.Psd.Cli.csproj" />
+  </Folder>
+</Solution>

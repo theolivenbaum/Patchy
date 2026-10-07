@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Patchy.Psd.Skia</RootNamespace>
+    <Description>SkiaSharp interop for Patchy.Psd: SKBitmap/SKImage conversion and Skia encoders (WebP, AVIF, high-quality JPEG).</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="4.153.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Patchy.Psd/Patchy.Psd.csproj" />
+  </ItemGroup>
+</Project>

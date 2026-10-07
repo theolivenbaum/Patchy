@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>psdtool</AssemblyName>
+    <RootNamespace>Patchy.Psd.Cli</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Patchy.Psd/Patchy.Psd.csproj" />
+  </ItemGroup>
+</Project>
