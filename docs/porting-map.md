@@ -17,7 +17,8 @@ Where each part of the C# library came from in the reference tree (`.reference/`
 | `Rendering/Adjustments.cs` | `src/core/adjustment_layer.cpp` | Threshold uses integer 30/59/11 luma; Posterize uses floor buckets. |
 | `Descriptors/Descriptor.cs` | `src/psd/psd_descriptor.cpp` | Depth-limited to 64 levels like the reference. |
 | `Text/EngineData.cs` | `src/psd/engine_data.cpp` | Read-only tree (the reference also round-trips whitespace for writing). |
-| `Text/TextLayerInfo.cs` | `src/psd/psd_text_read.cpp` | Text from the descriptor `Txt `; runs and fonts from EngineData. |
-| `Text/LegacyText.cs` | `src/psd/psd_text_legacy.cpp`, `docs/psd-legacy-text.md` | Text and fonts only. |
+| `Text/TextLayerInfo.cs`, `Text/EngineStyles.cs` | `src/psd/psd_text_read.cpp` (`extract_engine_text_runs`, `extract_engine_paragraph_runs`, `extract_type_tool_geometry`) | Text from the descriptor `Txt `; runs, paragraphs, fonts, warp and bounds. Fonts stay PostScript names (no platform font resolution). |
+| `Text/TextEngineBlock.cs`, `Text/TextEngineResolver.cs` | `src/psd/psd_text_engine_block.cpp`, `docs/txt2.md` | Read-only model; the reference only authors the block. Filling TySh gaps from it is new. |
+| `Text/LegacyText.cs` | `src/psd/psd_text_legacy.cpp`, `docs/psd-legacy-text.md` | Same validation and retry rules; kerning and base shift are kept, CMYK colors use the plain inverse-ink formula. |
 
 Not ported (out of scope for a reader/renderer, or deferred in TODO.md): the Qt UI, brushes and tools, filters and smart-filter re-rendering, the PSD writer, ASL/ABR/PAT/GRD preset files, other image formats, scripting, plug-ins, and color management.

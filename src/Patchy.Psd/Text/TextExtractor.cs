@@ -33,6 +33,13 @@ public enum PsdTextKind
 
     /// <summary>File name of an embedded or linked smart-object source.</summary>
     LinkedFileName,
+
+    /// <summary>
+    /// A text object of the document's <c>Txt2</c> block whose text no extracted type
+    /// layer reports: one no layer references, or one whose text differs from its
+    /// layer's own record (Photoshop displays the <c>Txt2</c> version).
+    /// </summary>
+    TextEngineObject,
 }
 
 /// <summary>One extracted string.</summary>
@@ -68,6 +75,12 @@ public sealed class TextExtractionOptions
 
     /// <summary>Include hidden layers (and layers inside hidden groups).</summary>
     public bool IncludeHiddenLayers { get; init; } = true;
+
+    /// <summary>
+    /// Report <c>Txt2</c> text objects that no extracted type layer covers as
+    /// <see cref="PsdTextKind.TextEngineObject"/> items (requires <see cref="IncludeTextLayers"/>).
+    /// </summary>
+    public bool IncludeTextEngineObjects { get; init; } = true;
 
     /// <summary>Recurse into embedded PSD/PSB smart objects up to this depth (0 disables).</summary>
     public int MaxEmbeddedDepth { get; init; } = 4;
@@ -152,6 +165,11 @@ internal static class TextExtractor
             }
         }
 
+        if (options.IncludeTextLayers && options.IncludeTextEngineObjects)
+        {
+            CollectTextEngineObjects(document, options, items, prefix, depth);
+        }
+
         if (options.IncludeChannelNames)
         {
             foreach (var name in ChannelNames(document))
@@ -203,6 +221,54 @@ internal static class TextExtractor
                     }
                 }
             }
+        }
+    }
+
+    private static void CollectTextEngineObjects(PsdDocument document, TextExtractionOptions options, List<PsdTextItem> items, string prefix, int depth)
+    {
+        if (document.GetGlobalTaggedBlock("Txt2") is null || document.TextEngine is not { } engine)
+        {
+            return;
+        }
+
+        var owners = new Dictionary<int, PsdLayer>();
+        foreach (var layer in document.Layers)
+        {
+            if (layer.Text?.TextIndex is int index)
+            {
+                owners.TryAdd(index, layer);
+            }
+        }
+
+        foreach (var textObject in engine.Objects)
+        {
+            if (textObject.Text.Length == 0)
+            {
+                continue;
+            }
+
+            var source = $"{prefix}Txt2/{textObject.Index}";
+            PsdLayer? owner = null;
+            if (owners.TryGetValue(textObject.Index, out var layer))
+            {
+                if (!options.IncludeHiddenLayers && !layer.IsEffectivelyVisible)
+                {
+                    continue;
+                }
+
+                if (layer.Text!.Text == textObject.Text)
+                {
+                    continue;
+                }
+
+                owner = layer;
+                source = prefix + layer.Path;
+            }
+
+            items.Add(new PsdTextItem(PsdTextKind.TextEngineObject, textObject.Text, source, depth == 0 ? owner : null, depth)
+            {
+                TextInfo = TextEngineResolver.FromObject(textObject, null),
+            });
         }
     }
 
