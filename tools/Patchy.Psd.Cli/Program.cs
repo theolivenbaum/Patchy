@@ -112,7 +112,7 @@ internal static class Cli
         var content = document.ExtractText();
         foreach (var item in content.Items)
         {
-            if (contentOnly && item.Kind != PsdTextKind.TextLayer)
+            if (contentOnly && item.Kind is not (PsdTextKind.TextLayer or PsdTextKind.TextEngineObject))
             {
                 continue;
             }
