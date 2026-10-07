@@ -33,13 +33,14 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `tests/XRay.Psd.Skia.Tests/` | Skia interop tests; also decodes the built-in PNG/JPEG output with Skia |
 | `tests/XRay.Psd.Text.Tests/` | Text re-rendering tests against the type fixtures; bundles Liberation Sans (OFL) in `Fonts/`, never uses system fonts |
 | `tests/fixtures/psd/` | Committed PSD/PSB fixtures and Photoshop reference renders (`.bmp`) copied from `.reference/test-fixtures/psd` |
+| `tests/fixtures/psd-tools/` | Color-mode, bit-depth, smart-object and resource files from psd-tools (MIT, see `NOTICE` and its `LICENSE`) |
 | `docs/porting-map.md` | Which reference files each C# area came from, and what was deliberately left out |
 | `docs/rendering.md` | Compositor model, effect pipeline, calibration status |
 | `docs/text.md` | Text model: TySh, `Txt2`, PS 5 `tySh`, gap filling and extraction |
 | `docs/text-rendering.md` | Type-layer re-rendering: core hook, font resolution, Photoshop layout model, validation metrics |
 | `docs/color.md` | ICC color management: what converts (pixels and stored colors), duotone, Little CMS parity, accuracy |
 | `docs/api.md` | Typed resource and layer-style views, CLI flags, NuGet packaging |
-| `docs/testing.md` | Test suites, mutation test, fuzzing, optional psd-tools fixtures in `local-test-fixtures/` |
+| `docs/testing.md` | Test suites, mutation test, fuzzing, the psd-tools fixtures |
 
 ## Commands
 

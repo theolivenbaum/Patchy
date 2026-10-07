@@ -9,10 +9,10 @@ namespace XRay.Psd.Tests;
 /// <summary>
 /// Real Photoshop files for the color modes and depths the committed fixtures
 /// lack (16/32-bit, grayscale, indexed, Lab, duotone, multichannel, bitmap) and
-/// a real embedded PSB smart object, from the psd-tools collection. They are
-/// not committed (see docs/testing.md); each test skips when the checkout is absent.
+/// a real embedded PSB smart object, from the psd-tools collection (MIT,
+/// tests/fixtures/psd-tools with its LICENSE).
 /// </summary>
-public sealed class LocalCorpusTests
+public sealed class PsdToolsCorpusTests
 {
     public static TheoryData<string, PsdColorMode, int, int> ColorModes() => new()
     {
@@ -39,7 +39,7 @@ public sealed class LocalCorpusTests
     [MemberData(nameof(ColorModes))]
     public void Color_mode_fixtures_load_render_and_match_their_merged_image(string name, PsdColorMode mode, int depth, int minimumLayers)
     {
-        var document = PsdDocument.Load(LocalFixtures.PsdTools(Path.Combine("colormodes", name)));
+        var document = PsdDocument.Load(Fixtures.PsdTools(Path.Combine("colormodes", name)));
 
         Assert.Equal(mode, document.ColorMode);
         Assert.Equal(depth, document.Depth);
@@ -77,8 +77,8 @@ public sealed class LocalCorpusTests
         // The same document saved at both depths: the 16-bit merged image must
         // decode to the 8-bit one within rounding (the ink and Lab conversions
         // round once more, hence the looser bound there).
-        var a = PsdDocument.Load(LocalFixtures.PsdTools(Path.Combine("colormodes", deep))).Render(new RenderOptions { Source = RenderSource.MergedImage });
-        var b = PsdDocument.Load(LocalFixtures.PsdTools(Path.Combine("colormodes", shallow))).Render(new RenderOptions { Source = RenderSource.MergedImage });
+        var a = PsdDocument.Load(Fixtures.PsdTools(Path.Combine("colormodes", deep))).Render(new RenderOptions { Source = RenderSource.MergedImage });
+        var b = PsdDocument.Load(Fixtures.PsdTools(Path.Combine("colormodes", shallow))).Render(new RenderOptions { Source = RenderSource.MergedImage });
 
         var diff = ImageTools.Compare(a, b);
         Assert.True(diff.MaxDelta <= maxDelta, $"{deep} vs {shallow}: {diff}");
@@ -87,7 +87,7 @@ public sealed class LocalCorpusTests
     [Fact]
     public void Embedded_psb_smart_object_is_parsed_and_its_text_extracted()
     {
-        var document = PsdDocument.Load(LocalFixtures.PsdTools("smart-object-slice.psd"));
+        var document = PsdDocument.Load(Fixtures.PsdTools("smart-object-slice.psd"));
 
         var layer = Assert.Single(document.Layers, l => l.Kind == PsdLayerKind.SmartObject);
         var file = Assert.Single(document.LinkedFiles);
@@ -110,7 +110,7 @@ public sealed class LocalCorpusTests
     [Fact]
     public void Layer_comps_resource_reads_names_comments_and_capture_flags()
     {
-        var comps = PsdDocument.Load(LocalFixtures.PsdTools("layer_comps.psd")).Resources.LayerComps;
+        var comps = PsdDocument.Load(Fixtures.PsdTools("layer_comps.psd")).Resources.LayerComps;
 
         Assert.NotNull(comps);
         Assert.Collection(
@@ -123,7 +123,7 @@ public sealed class LocalCorpusTests
     [Fact]
     public void Guides_read_in_pixels_with_their_orientation()
     {
-        var grid = PsdDocument.Load(LocalFixtures.PsdTools("metadata.psd")).Resources.GridAndGuides;
+        var grid = PsdDocument.Load(Fixtures.PsdTools("metadata.psd")).Resources.GridAndGuides;
 
         Assert.NotNull(grid);
         Assert.Equal(18, grid.HorizontalGridCycle);
@@ -135,7 +135,7 @@ public sealed class LocalCorpusTests
     [Fact]
     public void Version_6_slices_read_every_record()
     {
-        var slices = PsdDocument.Load(LocalFixtures.PsdTools("slices.psd")).Resources.Slices;
+        var slices = PsdDocument.Load(Fixtures.PsdTools("slices.psd")).Resources.Slices;
 
         Assert.NotNull(slices);
         Assert.Equal(10, slices.Slices.Count);

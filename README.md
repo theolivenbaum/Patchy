@@ -121,7 +121,7 @@ dotnet build XRay.Psd.slnx -c Release
 dotnet test --solution XRay.Psd.slnx -c Release
 ```
 
-Tests run every committed fixture in `tests/fixtures/psd` (parse, decode, truncation and seeded mutation robustness), compare renders with Photoshop's own captures, and cover the formats without fixtures through a synthetic PSD writer. Optional tests over real 16/32-bit, grayscale, indexed, Lab, duotone, multichannel and embedded PSB files run when the psd-tools collection is checked out into `local-test-fixtures/` (see `docs/testing.md`).
+Tests run every committed fixture in `tests/fixtures/psd` (parse, decode, truncation and seeded mutation robustness), compare renders with Photoshop's own captures, and cover the formats without fixtures through a synthetic PSD writer. Real 16/32-bit, grayscale, indexed, Lab, duotone, multichannel, bitmap and embedded PSB files come from the psd-tools collection (MIT), committed under `tests/fixtures/psd-tools/` (see `NOTICE`).
 
 NuGet packages (`XRay.Psd`, `XRay.Psd.Skia`, with `.snupkg` symbols and Source Link):
 
@@ -152,4 +152,4 @@ Seed `corpus/` with a few small files from `tests/fixtures/psd`. `docs/testing.m
 
 ## License
 
-MIT, see `LICENSE`.
+MIT, see `LICENSE`. Third-party test files and fonts are listed in `NOTICE`.

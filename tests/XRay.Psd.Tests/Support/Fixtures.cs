@@ -28,6 +28,10 @@ internal static class Fixtures
 
     public static PsdDocument Load(string name) => PsdDocument.Load(PathOf(name));
 
+    /// <summary>A file from the committed psd-tools subset (tests/fixtures/psd-tools), by its path relative to psd-tools' tests/psd_files.</summary>
+    public static string PsdTools(string relativePath) =>
+        System.IO.Path.Combine(Root.Value, "..", "psd-tools", relativePath);
+
     /// <summary>
     /// The Photoshop reference capture of a fixture: the .bmp beside it, or the one
     /// capture whose name differs (the Blend If round-trip fixture's render).

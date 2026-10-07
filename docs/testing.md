@@ -59,16 +59,8 @@ afl-fuzz -i local-test-fixtures/fuzz/corpus -o local-test-fixtures/fuzz/findings
 
 Replay a finding with `dotnet fuzz/XRay.Psd.Fuzz/bin/Release/net10.0/XRay.Psd.Fuzz.dll <file>`; the stack trace shows where the check is missing. Keep fixes narrow (an explicit bounds or count check that throws `PsdFormatException` or skips the block) and add the input, or a `PsdBuilder` reconstruction of it, as a test.
 
-## Local fixtures (psd-tools)
+## psd-tools fixtures
 
-The reference repository has no Photoshop-saved files in 16 or 32-bit, grayscale, indexed, Lab, duotone, multichannel or bitmap mode, and no embedded PSB smart object. The psd-tools project (MIT) has small single-feature files for all of them. Following the reference (`.reference/testy/fetch_psd_tools_corpus.py`), they are not committed: check them out into the gitignored `local-test-fixtures/`, pinned to the commit the reference uses.
+The reference repository has no Photoshop-saved files in 16 or 32-bit, grayscale, indexed, Lab, duotone, multichannel or bitmap mode, and no embedded PSB smart object. The psd-tools project (MIT, copyright Kota Yamaguchi) has small single-feature files for all of them. The 21 files the tests use (2.3 MB) are committed under `tests/fixtures/psd-tools/` with the psd-tools `LICENSE`, keeping their paths relative to psd-tools' `tests/psd_files/`; `NOTICE` at the repository root credits them. They come from psd-tools commit `605ee1284952c18c649ba60ebe73df4dabca9fbb`, the one `.reference/testy/fetch_psd_tools_corpus.py` pins.
 
-```bash
-mkdir -p local-test-fixtures/psd-tools && cd local-test-fixtures/psd-tools
-git init -q && git remote add origin https://github.com/psd-tools/psd-tools.git
-git sparse-checkout set --no-cone /tests/psd_files/
-git fetch -q --depth 1 --filter=blob:none origin 605ee1284952c18c649ba60ebe73df4dabca9fbb
-git checkout -q --detach FETCH_HEAD
-```
-
-`LocalCorpusTests` then runs: every `colormodes/` file loads with the expected mode and depth, its layer names are extracted, and the layer compositor matches the merged image; `smart-object-slice.psd` exposes its embedded PSB and text extraction recurses into it; `layer_comps.psd`, `metadata.psd` (guides) and `slices.psd` pin the typed resources. Without the checkout these tests are reported as skipped.
+`PsdToolsCorpusTests` runs over them: every `colormodes/` file loads with the expected mode and depth, its layer names are extracted, and the layer compositor matches the merged image; `smart-object-slice.psd` exposes its embedded PSB and text extraction recurses into it; `layer_comps.psd`, `metadata.psd` (guides) and `slices.psd` pin the typed resources. `Fixtures.PsdTools(path)` resolves a file. The full collection (356 files, 51 MB) is not committed; for wider mutation runs, sparse-check out `tests/psd_files/` of that commit into the gitignored `local-test-fixtures/`.
