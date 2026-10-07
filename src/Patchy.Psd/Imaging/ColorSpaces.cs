@@ -4,12 +4,63 @@ namespace Patchy.Psd.Imaging;
 
 /// <summary>
 /// Converts decoded channel planes from the document color mode to straight
-/// sRGB float planes. CMYK uses the uncalibrated inverse-ink formula (no ICC);
-/// Lab uses the CIE D50 to sRGB (Bradford-adapted) transform; 32-bit linear
-/// data is gamma-encoded with the sRGB transfer curve.
+/// sRGB float planes. When the document embeds a usable ICC profile (resource
+/// 1039) and color management is on, gray, RGB, indexed and CMYK data convert
+/// through it (<see cref="Icc.IccSrgbTransform"/>). Otherwise CMYK uses the
+/// uncalibrated inverse-ink formula, gray and RGB are taken as sRGB, Lab uses
+/// the CIE D50 to sRGB (Bradford-adapted) transform, and 32-bit linear data is
+/// gamma-encoded with the sRGB transfer curve.
 /// </summary>
 internal static class ColorSpaces
 {
+    /// <summary>Profile-aware conversion: the document's cached ICC transform when there is one, else the built-in formulas.</summary>
+    public static void ToRgb(PsdDocument document, int depth, float[]?[] planes, PlanarImage image)
+    {
+        var mode = document.ColorMode;
+        if (document.ColorTransform is { } transform && mode != PsdColorMode.Lab)
+        {
+            var count = image.R.Length;
+            var channels = transform.Channels;
+            if (mode == PsdColorMode.Indexed)
+            {
+                IndexedToRgb(Resolve(planes, 0, 0, count), document.Palette, image);
+                if (transform.Apply([image.R, image.G, image.B], 8, image))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                // Missing planes read as no ink (CMYK) or black, as in the fallback path.
+                var fallback = mode == PsdColorMode.Cmyk ? 1f : 0f;
+                var resolved = new float[channels][];
+                for (var i = 0; i < channels; i++)
+                {
+                    resolved[i] = Resolve(planes, i, fallback, count);
+                }
+
+                if (transform.Apply(resolved, depth, image))
+                {
+                    return;
+                }
+            }
+        }
+
+        ToRgb(mode, depth, planes, image, document.Palette);
+    }
+
+    private static float[] Resolve(float[]?[] planes, int index, float fallback, int count)
+    {
+        if (index < planes.Length && planes[index] is { } plane)
+        {
+            return plane;
+        }
+
+        var filled = new float[count];
+        filled.AsSpan().Fill(fallback);
+        return filled;
+    }
+
     public static int ColorChannelCount(PsdColorMode mode) => mode switch
     {
         PsdColorMode.Rgb or PsdColorMode.Lab => 3,
@@ -20,17 +71,7 @@ internal static class ColorSpaces
     public static void ToRgb(PsdColorMode mode, int depth, float[]?[] planes, PlanarImage image, PsdColor[]? palette)
     {
         var count = image.R.Length;
-        float[] Plane(int index, float fallback)
-        {
-            if (index < planes.Length && planes[index] is { } p)
-            {
-                return p;
-            }
-
-            var filled = new float[count];
-            filled.AsSpan().Fill(fallback);
-            return filled;
-        }
+        float[] Plane(int index, float fallback) => Resolve(planes, index, fallback, count);
 
         switch (mode)
         {

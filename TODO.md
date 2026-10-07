@@ -8,8 +8,9 @@ Use the survey (`PATCHY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each 
 
 - PSD/PSB parsing: header, color mode data, image resources, layer records, mask data (all three layouts, mask parameters), tagged blocks (including PSB wide lengths and 4-byte padded global blocks), group tree, 16/32-bit layers in `Lr16`/`Lr32`, `lnk2`/`lnkD`/`lnk3`/`lnkE` linked files.
 - Channel decoding: raw, PackBits, ZIP, ZIP with prediction at 1/8/16/32 bits; SIMD sample conversion.
-- Color modes: RGB, grayscale, bitmap, indexed, CMYK (uncalibrated), Lab (D50 to sRGB), duotone (as gray), multichannel (first channel).
+- Color modes: RGB, grayscale, bitmap, indexed, CMYK, Lab (D50 to sRGB), duotone (as gray), multichannel (first channel).
 - Descriptor and EngineData parsers; TySh text with style runs (character properties), paragraphs (indents, spacing, direction), fonts, orientation, warp, bounds; the global `Txt2` block as a typed model that fills TySh gaps; PS 5 `tySh` text with style runs, alignment and color. See `docs/text.md`.
+- ICC color management: embedded profiles (resource 1039) convert gray, RGB, indexed and CMYK pixels to sRGB with relative colorimetric intent and black point compensation, matching the reference's lcms2 setup (`docs/color.md`).
 - Text extraction: layer/group names, type layers, channel names, path names, slices, XMP and IPTC metadata, recursion into embedded PSD/PSB smart objects.
 - Compositor: all 27 blend modes (SIMD), opacity and fill (special Fill on the eight modes), pass-through and isolated groups, clipping runs, raster masks (density, feather), vector masks (baked plane or rasterized, density, unclamped feather), solid fill layers, Dissolve, Blend If, channel restrictions.
 - Adjustment layers at the reference's 8-bit LUT semantics: Levels, Curves (ACV body and `Crv ` extension), Hue/Saturation (`hue2` and `hue `: master, bands, colorize), Brightness/Contrast (legacy `brit` and modern `CgEd`), Exposure, Invert, Threshold, Posterize.
@@ -31,7 +32,10 @@ Use the survey (`PATCHY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each 
 
 ## Color
 
-- ICC-based conversion for CMYK, Lab and gray (resource 1039). Today CMYK uses the naive inverse-ink formula. The reference uses lcms2 (`.reference/src/color/`); a managed ICC transform (matrix/TRC and LUT-based profiles) would keep the core dependency-free.
+- Descriptor and text colors in CMYK and gray documents (`CMYC`/`Grsc` effect colors, EngineData `/FillColor` types 2 and 0) still use the naive formulas; the reference converts them through the same ICC transform as the pixels (`photoshop-cmyk-style-colors.psd` pins the overlay at (143,123,92)). `IccSrgbTransform.Evaluate` can do it once descriptors can reach the document.
+- CMYK patterns (`Patt` tiles in CMYK documents) and the legacy `lrFX` color-space ids are not color managed.
+- ICC gaps: absolute colorimetric intent (treated as relative), float LUTs (`D2Bx`/`mpet`), named-color and device-link profiles, and LUT-only profiles for 32-bit gray or RGB. See [docs/color.md](docs/color.md).
+- A real Photoshop fixture with a non-sRGB RGB profile (Adobe RGB, Display P3) and one with Dot Gain 20% gray; the reference pins its local `gray-ramp-dotgain20.psd` against Photoshop (128 to 149).
 - Duotone rendering from the duotone specification in the color mode data.
 - 32-bit documents: Photoshop's HDR toning for 8-bit conversion differs from the plain sRGB transfer used now.
 

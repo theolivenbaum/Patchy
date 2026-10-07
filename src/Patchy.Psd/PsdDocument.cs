@@ -13,6 +13,14 @@ public sealed class PsdLoadOptions
 
     /// <summary>Parse embedded smart-object files from the global link blocks.</summary>
     public bool ReadLinkedFiles { get; init; } = true;
+
+    /// <summary>
+    /// Convert gray, RGB, indexed and CMYK pixels to sRGB through the document's
+    /// embedded ICC profile (resource 1039), as Photoshop displays them. Turn off
+    /// to treat RGB and gray as sRGB and use the naive CMYK formula. Documents
+    /// without a usable profile convert the same way either way.
+    /// </summary>
+    public bool ColorManagement { get; init; } = true;
 }
 
 /// <summary>
@@ -117,6 +125,15 @@ public sealed class PsdDocument
         }
     }
 
+    private System.Runtime.CompilerServices.StrongBox<Imaging.Icc.IccSrgbTransform?>? _colorTransform;
+
+    /// <summary>Whether pixel decoding uses the embedded ICC profile (<see cref="PsdLoadOptions.ColorManagement"/>).</summary>
+    internal bool ColorManagementEnabled { get; set; } = true;
+
+    /// <summary>The cached embedded-profile-to-sRGB transform, or null when none applies (built on first use).</summary>
+    internal Imaging.Icc.IccSrgbTransform? ColorTransform =>
+        LazyInitializer.EnsureInitialized(ref _colorTransform, () => new(ColorManagementEnabled ? Imaging.Icc.IccSrgbTransform.ForDocument(this) : null)).Value;
+
     internal void AddLayer(PsdLayer layer) => _layers.Add(layer);
 
     internal void AddRootLayer(PsdLayer layer) => _rootLayers.Add(layer);
@@ -133,7 +150,13 @@ public sealed class PsdDocument
 
     public static PsdDocument Load(byte[] data, PsdLoadOptions? options = null) => Load(new ReadOnlyMemory<byte>(data), options);
 
-    public static PsdDocument Load(ReadOnlyMemory<byte> data, PsdLoadOptions? options = null) => PsdParser.Parse(data, options ?? new PsdLoadOptions());
+    public static PsdDocument Load(ReadOnlyMemory<byte> data, PsdLoadOptions? options = null)
+    {
+        options ??= new PsdLoadOptions();
+        var document = PsdParser.Parse(data, options);
+        document.ColorManagementEnabled = options.ColorManagement;
+        return document;
+    }
 
     /// <summary>True when the bytes start with the <c>8BPS</c> signature.</summary>
     public static bool IsPsd(ReadOnlySpan<byte> data) => data.Length >= 4 && data[0] == (byte)'8' && data[1] == (byte)'B' && data[2] == (byte)'P' && data[3] == (byte)'S';
