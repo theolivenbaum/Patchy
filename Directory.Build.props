@@ -17,4 +17,22 @@
     <RepositoryUrl>https://github.com/theolivenbaum/Patchy</RepositoryUrl>
     <Version>0.1.0</Version>
   </PropertyGroup>
+
+  <!-- NuGet packaging. Only the libraries under src/ opt in with IsPackable. -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <PackageProjectUrl>https://github.com/theolivenbaum/Patchy</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <!-- Source Link (built into the .NET SDK): repository URL, commit and sources in the PDB. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <!-- Reproducible paths in CI builds (GitHub Actions, Azure Pipelines, or CI=true). -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(TF_BUILD)' == 'true' or '$(CI)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
 </Project>

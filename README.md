@@ -13,6 +13,7 @@ It is a port of the PSD engine in Patchy, a C++ image editor whose source is kep
 - Built-in PNG and JPEG encoders. The optional `XRay.Psd.Skia` package adds `SKBitmap` interop and Skia encoders such as WebP.
 - Text extraction: layer and group names, type-layer content with fonts and style runs, channel and path names, slices, XMP and IPTC metadata, and text inside embedded PSD/PSB smart objects.
 - Optional type-layer re-rendering (`XRay.Psd.Text`, SkiaSharp and HarfBuzz): draws type layers from their text, for files that store no text pixels or when the text should be redrawn with other fonts. It follows Photoshop's layout model for point, box and vertical text, leading, tracking, glyph scales, alignment, transforms and Warp Text. See `docs/text-rendering.md`.
+- Typed views of the common image resources (resolution, guides and grid, thumbnail, slices, layer comps, print scale, pixel aspect ratio, version info, ICC profile, XMP, IPTC) and of each layer's effects.
 
 The layer compositor renders layer effects (shadows, glows, overlays, satin, strokes, bevel and emboss), adjustment layers (Levels, Curves, Hue/Saturation, Brightness/Contrast, Exposure, Invert, Threshold, Posterize) and solid, gradient and pattern fills. Not rendered from layers yet: vector strokes on shape layers, Blend If, some adjustments (Color Balance, Vibrance, Black and White, Channel Mixer, Selective Color, Gradient Map, Photo Filter). Documents saved with "Maximize Compatibility" render exactly through the merged image. See `TODO.md`.
 
@@ -50,7 +51,28 @@ foreach (var layer in document.EnumerateLayersTopDown())
     }
 
     layer.GetPixels()?.SavePng($"{layer.Index}.png"); // the layer's own pixels, no masks
+
+    // Layer effects as a typed view (the raw descriptor stays in layer.Effects).
+    foreach (var effect in layer.Style?.ActiveEffects ?? [])
+    {
+        Console.WriteLine($"  {effect.Kind} {effect.BlendMode} {effect.Opacity:P0} {effect.Color} size {effect.Size}");
+    }
 }
+
+// Typed image resources, parsed on first access (null when absent or damaged).
+var resources = document.Resources;
+Console.WriteLine($"{resources.Resolution?.HorizontalPpi} ppi, written by {resources.VersionInfo?.ReaderName}");
+foreach (var guide in resources.GridAndGuides?.Guides ?? [])
+{
+    Console.WriteLine($"{guide.Orientation} guide at {guide.Position} px");
+}
+
+foreach (var comp in resources.LayerComps?.Comps ?? [])
+{
+    Console.WriteLine($"layer comp \"{comp.Name}\"");
+}
+
+var thumbnailJpeg = resources.Thumbnail?.Data; // decode with XRay.Psd.Skia: resources.Thumbnail.Decode()
 ```
 
 Re-rendering type layers with the optional `XRay.Psd.Text` package:
@@ -82,10 +104,12 @@ foreach (var layer in document.EnumerateLayersTopDown())
 
 The package needs the Skia and HarfBuzz native assets for the platform (for example `SkiaSharp.NativeAssets.Linux` and `HarfBuzzSharp.NativeAssets.Linux`).
 
+`docs/api.md` lists every resource view and effect property.
+
 Command line:
 
 ```bash
-dotnet run --project tools/XRay.Psd.Cli -- info file.psd
+dotnet run --project tools/XRay.Psd.Cli -- info file.psd --resources --effects
 dotnet run --project tools/XRay.Psd.Cli -- text file.psd
 dotnet run --project tools/XRay.Psd.Cli -- render file.psd out.png --layers
 ```
@@ -97,7 +121,34 @@ dotnet build XRay.Psd.slnx -c Release
 dotnet test --solution XRay.Psd.slnx -c Release
 ```
 
-Tests run every committed fixture in `tests/fixtures/psd` (parse, decode, truncation robustness), compare renders with Photoshop's own captures, and cover the formats without fixtures through a synthetic PSD writer.
+Tests run every committed fixture in `tests/fixtures/psd` (parse, decode, truncation and seeded mutation robustness), compare renders with Photoshop's own captures, and cover the formats without fixtures through a synthetic PSD writer. Optional tests over real 16/32-bit, grayscale, indexed, Lab, duotone, multichannel and embedded PSB files run when the psd-tools collection is checked out into `local-test-fixtures/` (see `docs/testing.md`).
+
+NuGet packages (`XRay.Psd`, `XRay.Psd.Skia`, with `.snupkg` symbols and Source Link):
+
+```bash
+dotnet pack XRay.Psd.slnx -c Release -o artifacts
+```
+
+## Fuzzing
+
+`fuzz/XRay.Psd.Fuzz` is a [SharpFuzz](https://github.com/Metalnem/sharpfuzz) harness over `PsdDocument.Load`, `Render` and `ExtractText`; any exception other than `PsdFormatException` counts as a crash. Build it, instrument the library, then run it under libFuzzer or AFL:
+
+```bash
+dotnet tool install --global SharpFuzz.CommandLine
+dotnet build fuzz/XRay.Psd.Fuzz -c Release
+sharpfuzz fuzz/XRay.Psd.Fuzz/bin/Release/net10.0/XRay.Psd.dll
+
+# libFuzzer, with libfuzzer-dotnet from https://github.com/Metalnem/libfuzzer-dotnet/releases
+./libfuzzer-dotnet --target_path=fuzz/XRay.Psd.Fuzz/bin/Release/net10.0/XRay.Psd.Fuzz -timeout=20 corpus/
+
+# AFL++
+afl-fuzz -i corpus/ -o findings/ -t 20000 -m none dotnet fuzz/XRay.Psd.Fuzz/bin/Release/net10.0/XRay.Psd.Fuzz.dll --afl
+
+# Replay a saved input without a fuzzer
+dotnet fuzz/XRay.Psd.Fuzz/bin/Release/net10.0/XRay.Psd.Fuzz.dll crash-file
+```
+
+Seed `corpus/` with a few small files from `tests/fixtures/psd`. `docs/testing.md` has the details.
 
 ## License
 

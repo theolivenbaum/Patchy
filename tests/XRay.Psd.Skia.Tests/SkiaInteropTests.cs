@@ -61,4 +61,35 @@ public sealed class SkiaInteropTests
         using var bitmap = document.RenderToSKBitmap();
         Assert.Equal(document.Width, bitmap.Width);
     }
+
+    [Fact]
+    public void Jpeg_thumbnail_decodes_and_resembles_the_merged_image()
+    {
+        var document = Fixtures.Load("photoshop-shape-solid.psd");
+        var thumbnail = document.Resources.Thumbnail;
+        Assert.NotNull(thumbnail);
+
+        var image = thumbnail.Decode();
+
+        Assert.NotNull(image);
+        Assert.Equal((thumbnail.Width, thumbnail.Height), (image.Width, image.Height));
+
+        // The thumbnail is a downscaled, JPEG-compressed copy of the composite over white.
+        var merged = document.Render(new Rendering.RenderOptions { Background = PsdColor.White });
+        var center = image.GetPixel(image.Width / 2, image.Height / 2);
+        var expected = merged.GetPixel(merged.Width / 2, merged.Height / 2);
+        Assert.True(Math.Abs(center.R - expected.R) + Math.Abs(center.G - expected.G) + Math.Abs(center.B - expected.B) < 30, $"{center} vs {expected}");
+    }
+
+    [Fact]
+    public void Raw_bgr_thumbnail_decodes_to_rgb()
+    {
+        var thumbnail = new Resources.PsdThumbnail(Resources.PsdThumbnailFormat.RawRgb, 2, 1, 8, 24, IsBgr: true, new byte[] { 1, 2, 3, 4, 5, 6, 0, 0 });
+
+        var image = thumbnail.Decode();
+
+        Assert.NotNull(image);
+        Assert.Equal(new PsdColor(3, 2, 1), image.GetPixel(0, 0));
+        Assert.Equal(new PsdColor(6, 5, 4), image.GetPixel(1, 0));
+    }
 }

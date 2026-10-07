@@ -7,6 +7,15 @@
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
   </PropertyGroup>
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>XRay.Psd</PackageId>
+    <PackageTags>psd;psb;photoshop;image;render;compositing;text-extraction;layers</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" Visible="false" />
+  </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="XRay.Psd.Tests" />
     <InternalsVisibleTo Include="XRay.Psd.Skia" />

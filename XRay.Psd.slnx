@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/fuzz/">
+    <Project Path="fuzz/XRay.Psd.Fuzz/XRay.Psd.Fuzz.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/XRay.Psd.Skia/XRay.Psd.Skia.csproj" />
     <Project Path="src/XRay.Psd/XRay.Psd.csproj" />

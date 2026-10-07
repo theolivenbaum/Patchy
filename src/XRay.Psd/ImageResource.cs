@@ -26,6 +26,10 @@ public static class ImageResourceIds
     public const ushort PathLast = 2997;
     public const ushort ClippingPathName = 2999;
     public const ushort WorkPath = 1025;
+    public const ushort ThumbnailLegacy = 1033;
+    public const ushort PrintScale = 1062;
+    public const ushort PixelAspectRatio = 1064;
+    public const ushort LayerComps = 1065;
 }
 
 /// <summary>A linked or embedded smart-object source file from the <c>lnk2</c>/<c>lnkD</c>/<c>lnk3</c>/<c>lnkE</c> blocks.</summary>

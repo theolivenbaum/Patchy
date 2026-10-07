@@ -1,10 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>XRay.Psd.Skia</RootNamespace>
-    <Description>SkiaSharp interop for XRay.Psd: SKBitmap/SKImage conversion and Skia encoders (WebP, AVIF, high-quality JPEG).</Description>
+    <Description>SkiaSharp interop for XRay.Psd: SKBitmap/SKImage conversion, thumbnail decoding and Skia encoders (WebP, AVIF, high-quality JPEG).</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>XRay.Psd.Skia</PackageId>
+    <PackageTags>psd;psb;photoshop;skiasharp;skia;webp;image</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="SkiaSharp" Version="4.153.1" />
   </ItemGroup>

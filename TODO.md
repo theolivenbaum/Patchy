@@ -29,6 +29,7 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 6. **Knockout** (shallow/deep), which the reference does not model either.
 7. **Photoshop 8-bit rounding**: the float pipeline is within 1/255 of Photoshop's integer kernels for single layers. No committed fixture shows stack drift beyond anti-aliasing: rounding straight RGB to bytes after every composite write, as the reference does, moved nine fixtures by at most 0.13 mean in both directions (see `docs/rendering.md`, Pixel model). Bit-exact output would need Photoshop's own integer kernels per mode, which the reference does not have either; revisit with a deep-stack Photoshop capture.
 8. **Merged image matte of other writers**: Photoshop's white matte is confirmed and removed (`docs/rendering.md`, Sources), but Patchy writes straight color, so its transparent documents decode slightly light at soft edges. Patchy writes no version-info resource (1057) while Photoshop always does, which could select the convention; check other writers (GIMP, Krita) before relying on it.
+9. **Gradient fill layers without pixels**: in the psd-tools `colormodes/4x4_16bit_*.psd` and `4x4_32bit_*.psd` files (see docs/testing.md) the `Gradient Fill 1` layer has empty bounds, so the compositor regenerates it from `GdFl`; the result is the merged image mirrored across the other diagonal (max delta 46 to 129). The 8-bit saves carry baked pixels and match. Check the angle and reverse handling in `Gradient.cs` against these files.
 
 ## Color
 
@@ -56,13 +57,12 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 
 ## API and packaging
 
-- Typed parsers for common image resources (resolution, guides, thumbnail, slices, layer comps) and for effect descriptors.
 - `PsdDocument.LoadAsync` and a stream-based loader that avoids the extra copy.
 - PSD writing (the reference writer is `.reference/src/psd/psd_document_io.cpp` plus `.reference/docs/ps-compat.md`; every written file must open in Photoshop without warnings).
-- NuGet packaging (README, icon, source link) and a new CI workflow. The reference repository's workflows were disabled on purpose; add new ones under `.github/workflows/` only when asked.
+- A package icon, and a CI workflow that builds, tests and packs with `ContinuousIntegrationBuild`. The reference repository's workflows were disabled on purpose; add new ones under `.github/workflows/` only when asked.
+- Typed views not written yet: per-layer comp state (`shmd` metadata), legacy `lrFX` effects (Photoshop 5) in `PsdLayer.Style`, the slices descriptor (v7/v8) checked against a real Photoshop file (only the v6 layout has fixtures), and the raw-RGB thumbnail format in a real file.
 
 ## Testing
 
-- Real Photoshop fixtures for 16-bit, 32-bit, grayscale, indexed, Lab, duotone and multichannel documents (only synthetic `PsdBuilder` files cover them now).
-- A fuzzing harness (SharpFuzz) over `PsdDocument.Load`, `Render` and `ExtractText`.
-- A real embedded PSB smart-object fixture (the recursion test uses a synthetic one).
+- Commit real fixtures for 16-bit, 32-bit, grayscale, indexed, Lab, duotone, multichannel and bitmap documents and an embedded PSB smart object. `.reference/` has none; the psd-tools collection (MIT) has them and `LocalCorpusTests` covers them from `local-test-fixtures/` (docs/testing.md), but like the reference the repository does not commit third-party files. Committing them needs a decision on attribution (a NOTICE entry) or Photoshop captures of our own.
+- Run the SharpFuzz harness for long sessions (hours, AFL++ or libFuzzer) and keep the corpus outside the repository; a ten-minute libFuzzer run and the mutation test found no crash so far.
