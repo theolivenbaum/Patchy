@@ -231,7 +231,7 @@ internal sealed partial class LayerCompositor
         if (!stroke.FillEnabled && layer.GetTaggedBlock("vscg") is { Data.Length: > 8 } legacy)
         {
             var key = PsdParser.DecodeLatin1(legacy.Data.Span[..4]);
-            if (key is "SoCo" or "GdFl" or "PtFl" && PsdParser.TryReadDescriptor(legacy.Data, skip: 4) is { } descriptor)
+            if (key is "SoCo" or "GdFl" or "PtFl" && PsdParser.TryReadDescriptor(legacy.Data, skip: 4, layer.Document.Colors) is { } descriptor)
             {
                 return (key, descriptor);
             }

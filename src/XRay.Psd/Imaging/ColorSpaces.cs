@@ -9,7 +9,9 @@ namespace XRay.Psd.Imaging;
 /// through it (<see cref="Icc.IccSrgbTransform"/>). Otherwise CMYK uses the
 /// uncalibrated inverse-ink formula, gray and RGB are taken as sRGB, Lab uses
 /// the CIE D50 to sRGB (Bradford-adapted) transform, and 32-bit linear data is
-/// gamma-encoded with the sRGB transfer curve.
+/// gamma-encoded with the sRGB transfer curve. Duotone documents with a readable
+/// specification mix their inks (<see cref="Duotone"/>); multichannel documents
+/// read their first three planes as inverted cyan, magenta and yellow.
 /// </summary>
 internal static class ColorSpaces
 {
@@ -17,6 +19,12 @@ internal static class ColorSpaces
     public static void ToRgb(PsdDocument document, int depth, float[]?[] planes, PlanarImage image)
     {
         var mode = document.ColorMode;
+        if (mode == PsdColorMode.Duotone && document.Colors.Duotone is { } duotone
+            && duotone.Apply(Resolve(planes, 0, 0, image.R.Length), depth, document.ColorTransform, image))
+        {
+            return;
+        }
+
         if (document.ColorTransform is { } transform && mode != PsdColorMode.Lab)
         {
             var count = image.R.Length;
@@ -63,7 +71,7 @@ internal static class ColorSpaces
 
     public static int ColorChannelCount(PsdColorMode mode) => mode switch
     {
-        PsdColorMode.Rgb or PsdColorMode.Lab => 3,
+        PsdColorMode.Rgb or PsdColorMode.Lab or PsdColorMode.Multichannel => 3,
         PsdColorMode.Cmyk => 4,
         _ => 1,
     };
@@ -96,9 +104,17 @@ internal static class ColorSpaces
             case PsdColorMode.Indexed:
                 IndexedToRgb(Plane(0, 0), palette, image);
                 break;
+            case PsdColorMode.Multichannel:
+                // The first three planes are cyan, magenta and yellow inks stored inverted, so
+                // they read directly as red, green and blue; a missing plane is no ink
+                // (convert_multichannel_planes_to_rgb, .reference/src/psd/psd_channel_data.cpp).
+                Plane(0, 1).AsSpan().CopyTo(image.R);
+                Plane(1, 1).AsSpan().CopyTo(image.G);
+                Plane(2, 1).AsSpan().CopyTo(image.B);
+                break;
             default:
                 {
-                    // Grayscale, bitmap, duotone (shown as its gray base) and multichannel (first channel).
+                    // Grayscale, bitmap and duotone without a usable specification (its gray base).
                     var gray = Plane(0, 0);
                     if (depth == 32)
                     {

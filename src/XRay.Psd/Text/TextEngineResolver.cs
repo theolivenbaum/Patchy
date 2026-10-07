@@ -17,7 +17,7 @@ internal static class TextEngineResolver
     public static TextEngineBlock? ParseBlock(PsdDocument document)
     {
         var block = document.GetGlobalTaggedBlock("Txt2");
-        return block is null ? null : TextEngineBlock.Parse(block.Data.Span, PixelsPerPoint(document));
+        return block is null ? null : TextEngineBlock.Parse(block.Data.Span, PixelsPerPoint(document), document.Colors);
     }
 
     public static void Apply(PsdDocument document)

@@ -90,7 +90,10 @@ public sealed class TextEngineBlock
     /// values stored in points (unit flag 1) to document pixels: the document
     /// resolution divided by 72. Returns null when the block does not decode.
     /// </summary>
-    public static TextEngineBlock? Parse(ReadOnlySpan<byte> payload, double pixelsPerPoint = 1)
+    public static TextEngineBlock? Parse(ReadOnlySpan<byte> payload, double pixelsPerPoint = 1) => Parse(payload, pixelsPerPoint, null);
+
+    /// <summary>Parses a Txt2 payload whose colors convert like the document's pixels.</summary>
+    internal static TextEngineBlock? Parse(ReadOnlySpan<byte> payload, double pixelsPerPoint, Imaging.DocumentColors? colors)
     {
         if (!double.IsFinite(pixelsPerPoint) || pixelsPerPoint <= 0)
         {
@@ -130,7 +133,7 @@ public sealed class TextEngineBlock
         var objects = new List<TextEngineObject>(objectList.Items.Count);
         for (var i = 0; i < objectList.Items.Count; i++)
         {
-            objects.Add(ReadObject(i, objectList.Items[i], fontNames, frames, normalStyle, defaultStyle, normalParagraph, defaultParagraph, pixelsPerPoint));
+            objects.Add(ReadObject(i, objectList.Items[i], fontNames, frames, normalStyle, defaultStyle, normalParagraph, defaultParagraph, pixelsPerPoint, colors));
         }
 
         return new TextEngineBlock(root)
@@ -188,7 +191,8 @@ public sealed class TextEngineBlock
         EngineValue? defaultStyle,
         EngineValue? normalParagraph,
         EngineValue? defaultParagraph,
-        double pixelsPerPoint)
+        double pixelsPerPoint,
+        Imaging.DocumentColors? colors)
     {
         var model = node["0"];
         var raw = model?["0"] is { Kind: EngineValueKind.String } text ? text.Text : string.Empty;
@@ -248,7 +252,8 @@ public sealed class TextEngineBlock
                 key => sheet?[key] ?? normalStyle?[key] ?? defaultStyle?[key],
                 StyleKeys.TextEngine,
                 fontNames,
-                scale));
+                scale,
+                colors));
             start += length;
         }
 

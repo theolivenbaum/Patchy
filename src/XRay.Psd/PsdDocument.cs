@@ -134,6 +134,11 @@ public sealed class PsdDocument
     internal Imaging.Icc.IccSrgbTransform? ColorTransform =>
         LazyInitializer.EnsureInitialized(ref _colorTransform, () => new(ColorManagementEnabled ? Imaging.Icc.IccSrgbTransform.ForDocument(this) : null)).Value;
 
+    private DocumentColors? _colors;
+
+    /// <summary>Converts descriptor, text and pattern colors the same way as the pixels (see <see cref="DocumentColors"/>).</summary>
+    internal DocumentColors Colors => LazyInitializer.EnsureInitialized(ref _colors, () => new DocumentColors(this));
+
     internal void AddLayer(PsdLayer layer) => _layers.Add(layer);
 
     internal void AddRootLayer(PsdLayer layer) => _rootLayers.Add(layer);
@@ -153,9 +158,7 @@ public sealed class PsdDocument
     public static PsdDocument Load(ReadOnlyMemory<byte> data, PsdLoadOptions? options = null)
     {
         options ??= new PsdLoadOptions();
-        var document = PsdParser.Parse(data, options);
-        document.ColorManagementEnabled = options.ColorManagement;
-        return document;
+        return PsdParser.Parse(data, options);
     }
 
     /// <summary>True when the bytes start with the <c>8BPS</c> signature.</summary>

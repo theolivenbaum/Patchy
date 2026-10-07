@@ -38,6 +38,7 @@ internal sealed class IccProfile
 
     private readonly IccLut?[] _aToB = new IccLut?[3];
     private readonly IccLut?[] _bToA = new IccLut?[3];
+    private readonly IccLut?[] _dToB = new IccLut?[4];
 
     private IccProfile()
     {
@@ -92,13 +93,23 @@ internal sealed class IccProfile
     /// <summary>The PCS-to-device LUT for an intent tag (0..2), without fallback.</summary>
     public IccLut? GetBToA(int index) => (uint)index < 3 ? _bToA[index] : null;
 
+    /// <summary>The float device-to-PCS LUT (<c>D2B0..3</c>) for an intent, without fallback.</summary>
+    public IccLut? GetDToB(int index) => (uint)index < 4 ? _dToB[index] : null;
+
     /// <summary>
-    /// The device-to-PCS LUT Little CMS picks for <paramref name="intent"/>:
-    /// <c>A2B0/1/2</c> by intent (absolute uses <c>A2B1</c>), falling back to
-    /// <c>A2B0</c>; null when the profile has no LUT (matrix/TRC only).
+    /// The device-to-PCS LUT Little CMS picks for <paramref name="intent"/>
+    /// (<c>_cmsReadInputLUT</c>): the intent's float <c>D2Bx</c> tag when present
+    /// (absolute has its own <c>D2B3</c>), else <c>A2B0/1/2</c> by intent (absolute
+    /// uses <c>A2B1</c>), falling back to <c>A2B0</c>; null when the profile has no
+    /// LUT (matrix/TRC only).
     /// </summary>
     public IccLut? InputLut(IccRenderingIntent intent)
     {
+        if (_dToB[(int)intent] is { } floatLut)
+        {
+            return floatLut;
+        }
+
         var index = intent == IccRenderingIntent.AbsoluteColorimetric ? 1 : (int)intent;
         return _aToB[index] ?? _aToB[0];
     }
@@ -233,6 +244,9 @@ internal sealed class IccProfile
                 break;
             case "B2A0" or "B2A1" or "B2A2":
                 _bToA[signature[3] - '0'] = ReadLut(tag, deviceToPcs: false);
+                break;
+            case "D2B0" or "D2B1" or "D2B2" or "D2B3":
+                _dToB[signature[3] - '0'] = TypeOf(tag) == "mpet" ? ReadLut(tag, deviceToPcs: true) : null;
                 break;
         }
     }

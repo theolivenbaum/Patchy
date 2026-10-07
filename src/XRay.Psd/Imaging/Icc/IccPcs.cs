@@ -36,6 +36,11 @@ internal static class IccPcs
     /// <summary>Decodes a LUT's normalized PCS output to XYZ (D50).</summary>
     public static IccXyz Decode(uint pcs, IccPcsEncoding labEncoding, ReadOnlySpan<double> v)
     {
+        if (labEncoding == IccPcsEncoding.Float)
+        {
+            return pcs == IccProfile.SpaceXyz ? new IccXyz(v[0], v[1], v[2]) : LabToXyz(v[0], v[1], v[2]);
+        }
+
         if (pcs == IccProfile.SpaceXyz)
         {
             const double scale = 65535.0 / 32768.0;
@@ -51,6 +56,12 @@ internal static class IccPcs
     /// <summary>Encodes an XYZ (D50) color as a LUT's normalized PCS input.</summary>
     public static void Encode(uint pcs, IccPcsEncoding labEncoding, IccXyz xyz, Span<double> v)
     {
+        if (labEncoding == IccPcsEncoding.Float)
+        {
+            (v[0], v[1], v[2]) = pcs == IccProfile.SpaceXyz ? (xyz.X, xyz.Y, xyz.Z) : XyzToLab(xyz);
+            return;
+        }
+
         if (pcs == IccProfile.SpaceXyz)
         {
             const double scale = 32768.0 / 65535.0;

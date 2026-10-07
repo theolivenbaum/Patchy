@@ -8,9 +8,9 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 
 - PSD/PSB parsing: header, color mode data, image resources, layer records, mask data (all three layouts, mask parameters), tagged blocks (including PSB wide lengths and 4-byte padded global blocks), group tree, 16/32-bit layers in `Lr16`/`Lr32`, `lnk2`/`lnkD`/`lnk3`/`lnkE` linked files.
 - Channel decoding: raw, PackBits, ZIP, ZIP with prediction at 1/8/16/32 bits; SIMD sample conversion.
-- Color modes: RGB, grayscale, bitmap, indexed, CMYK, Lab (D50 to sRGB), duotone (as gray), multichannel (first channel).
+- Color modes: RGB, grayscale, bitmap, indexed, CMYK, Lab (D50 to sRGB), duotone (ink curves from the specification), multichannel (first three planes as CMY inks, as in the reference).
 - Descriptor and EngineData parsers; TySh text with style runs (character properties), paragraphs (indents, spacing, direction), fonts, orientation, warp, bounds; the global `Txt2` block as a typed model that fills TySh gaps; PS 5 `tySh` text with style runs, alignment and color. See `docs/text.md`.
-- ICC color management: embedded profiles (resource 1039) convert gray, RGB, indexed and CMYK pixels to sRGB with relative colorimetric intent and black point compensation, matching the reference's lcms2 setup (`docs/color.md`).
+- ICC color management: embedded profiles (resource 1039) convert gray, RGB, indexed and CMYK pixels to sRGB with relative colorimetric intent and black point compensation, matching the reference's lcms2 setup; descriptor, text, legacy and pattern colors go through the same transform; absolute colorimetric, float `D2Bx` LUTs and 32-bit RGB with LUT-only profiles are supported (`docs/color.md`).
 - Text extraction: layer/group names, type layers, channel names, path names, slices, XMP and IPTC metadata, recursion into embedded PSD/PSB smart objects.
 - Compositor: all 27 blend modes (SIMD), opacity and fill (special Fill on the eight modes), pass-through and isolated groups, clipping runs, raster masks (density, feather), vector masks (baked plane or rasterized, density, unclamped feather), solid fill layers, Dissolve, Blend If, channel restrictions.
 - Adjustment layers at the reference's 8-bit LUT semantics: Levels, Curves (ACV body and `Crv ` extension), Hue/Saturation (`hue2` and `hue `: master, bands, colorize), Brightness/Contrast (legacy `brit` and modern `CgEd`), Exposure, Invert, Threshold, Posterize.
@@ -32,12 +32,11 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 
 ## Color
 
-- Descriptor and text colors in CMYK and gray documents (`CMYC`/`Grsc` effect colors, EngineData `/FillColor` types 2 and 0) still use the naive formulas; the reference converts them through the same ICC transform as the pixels (`photoshop-cmyk-style-colors.psd` pins the overlay at (143,123,92)). `IccSrgbTransform.Evaluate` can do it once descriptors can reach the document.
-- CMYK patterns (`Patt` tiles in CMYK documents) and the legacy `lrFX` color-space ids are not color managed.
-- ICC gaps: absolute colorimetric intent (treated as relative), float LUTs (`D2Bx`/`mpet`), named-color and device-link profiles, and LUT-only profiles for 32-bit gray or RGB. See [docs/color.md](docs/color.md).
-- A real Photoshop fixture with a non-sRGB RGB profile (Adobe RGB, Display P3) and one with Dot Gain 20% gray; the reference pins its local `gray-ramp-dotgain20.psd` against Photoshop (128 to 149).
-- Duotone rendering from the duotone specification in the color mode data.
-- 32-bit documents: Photoshop's HDR toning for 8-bit conversion differs from the plain sRGB transfer used now.
+- Legacy `lrFX` effects (PS 5 drop shadows, used by the reference only when a layer has no `lfx2`/`lmfx`) are not parsed. Their 10-byte colors would go through `LegacyText.ReadColor` with the document's `DocumentColors`, which already converts CMYK through the profile; the parsing belongs with the layer effects (`parse_lrfx_layer_style` in `.reference/src/psd/psd_layer_styles.cpp`).
+- Real Photoshop fixtures: a non-sRGB RGB profile (Adobe RGB, Display P3), Dot Gain 20% gray (the reference pins its local `gray-ramp-dotgain20.psd`, 128 to 149; the test uses a stand-in profile fitted to those pins), and a duotone document with a Photoshop render to calibrate the ink model (overprint colors, dot gain field and color-book inks are not modeled).
+- 32-bit documents use the reference's plain transfer (clamp and sRGB-encode); Photoshop's HDR toning options are not modeled, and the reference itself does not model them either. 32-bit gray with a LUT-only gray profile is read as linear luminance.
+- Named-color and device-link profiles are not supported (they do not describe document pixels).
+- Adjustment layers on inks: the reference runs the channel-wise adjustments of CMYK and gray documents on the inks through an `InkSpace` sampled from the profile in both directions (`build_cmyk_ink_space`, `.reference/src/core/ink_space.cpp`). That needs the PCS-to-device direction (`B2Ax`) evaluated to tables, which the port does not build yet.
 
 ## Text
 

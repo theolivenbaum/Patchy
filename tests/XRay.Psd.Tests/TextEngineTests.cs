@@ -122,15 +122,19 @@ public sealed class TextEngineTests
     [Fact]
     public void Cmyk_document_text_colors_convert_from_ink()
     {
-        // FillColor /Type 2 [1 0 1 1 0]: no cyan, full magenta and yellow, no black.
+        // FillColor /Type 2 [1 0 1 1 0]: no cyan, full magenta and yellow, no black. Through the
+        // embedded SWOP profile that is Photoshop's (237, 28, 36); the naive ink mix gives pure red.
         var info = Fixtures.Load("photoshop-cmyk-style-colors.psd").Layers.Single(l => l.Text is not null).Text!;
         var run = Assert.Single(info.StyleRuns);
 
         Assert.Equal("Menu", info.Text);
         Assert.Equal("MyriadPro-Regular", run.FontName);
-        Assert.Equal(new PsdColor(255, 0, 0), run.FillColor);
-        Assert.Equal(new PsdColor(255, 0, 0), info.TextEngineObject!.StyleRuns.Single().FillColor);
+        Assert.Equal(new PsdColor(237, 28, 36), run.FillColor);
+        Assert.Equal(new PsdColor(237, 28, 36), info.TextEngineObject!.StyleRuns.Single().FillColor);
         Assert.NotNull(run.StrokeColor);
+
+        var naive = PsdDocument.Load(Fixtures.PathOf("photoshop-cmyk-style-colors.psd"), new PsdLoadOptions { ColorManagement = false });
+        Assert.Equal(new PsdColor(255, 0, 0), naive.Layers.Single(l => l.Text is not null).Text!.StyleRuns.Single().FillColor);
     }
 
     [Fact]

@@ -203,8 +203,9 @@ internal static class EngineStyles
     /// Type 1 is [alpha, red, green, blue], 2 is [alpha, cyan, magenta, yellow, black]
     /// ink fractions, 0 is [alpha, level] with 0 black
     /// (<c>rgb_color_from_engine_values</c>, .reference/src/psd/psd_text_read.cpp).
+    /// With <paramref name="colors"/>, the values convert like the document's pixels.
     /// </summary>
-    public static PsdColor? Color(EngineValue? node)
+    public static PsdColor? Color(EngineValue? node, Imaging.DocumentColors? colors = null)
     {
         if (node is not { Kind: EngineValueKind.Dictionary })
         {
@@ -242,9 +243,13 @@ internal static class EngineStyles
         static byte Unit(double value) => (byte)Math.Clamp(Math.Round(value * 255), 0, 255);
         switch (type)
         {
+            case 0 when v.Length >= 2 && colors is not null:
+                return colors.FromGray(v[1], Unit(v[0]));
             case 0 when v.Length >= 2:
                 var level = Unit(v[1]);
                 return new PsdColor(level, level, level, Unit(v[0]));
+            case 2 when v.Length >= 5 && colors is not null:
+                return colors.FromInk(v[1], v[2], v[3], v[4], Unit(v[0]));
             case 2 when v.Length >= 5:
                 var k = 1 - Math.Clamp(v[4], 0, 1);
                 return new PsdColor(
@@ -263,7 +268,9 @@ internal static class EngineStyles
                 // Old writers stored 0..255 components; a value above 1 marks that scale.
                 var normalized = v[1] <= 1 && v[2] <= 1 && v[3] <= 1;
                 byte C(double value) => normalized ? Unit(value) : (byte)Math.Clamp(Math.Round(value), 0, 255);
-                return new PsdColor(C(v[1]), C(v[2]), C(v[3]), Unit(Math.Min(1, v[0])));
+                return colors is not null
+                    ? colors.FromRgb(C(v[1]), C(v[2]), C(v[3]), Unit(Math.Min(1, v[0])))
+                    : new PsdColor(C(v[1]), C(v[2]), C(v[3]), Unit(Math.Min(1, v[0])));
         }
     }
 
@@ -279,7 +286,8 @@ internal static class EngineStyles
         Lookup lookup,
         StyleKeys keys,
         IReadOnlyList<string> fontNames,
-        double lengthScale)
+        double lengthScale,
+        Imaging.DocumentColors? colors = null)
     {
         EngineValue? Get(string? key) => key is null ? null : lookup(key);
         double? Scaled(string? key) => Number(Get(key)) is double value ? value * lengthScale : null;
@@ -322,7 +330,7 @@ internal static class EngineStyles
             TextLayerInfo.NormalizeText(segment),
             fontName,
             fontSize,
-            Color(Get(keys.FillColor)),
+            Color(Get(keys.FillColor), colors),
             Flag(Get(keys.FauxBold)) ?? false,
             Flag(Get(keys.FauxItalic)) ?? false,
             tracking,
@@ -343,7 +351,7 @@ internal static class EngineStyles
             BaselineDirection = Integer(Get(keys.BaselineDirection)) ?? 0,
             Language = Integer(Get(keys.Language)),
             NoBreak = Flag(Get(keys.NoBreak)) ?? false,
-            StrokeColor = Color(Get(keys.StrokeColor)),
+            StrokeColor = Color(Get(keys.StrokeColor), colors),
             FillEnabled = Flag(Get(keys.FillFlag)) ?? true,
             StrokeEnabled = Flag(Get(keys.StrokeFlag)) ?? false,
             StrokeWidth = Number(Get(keys.OutlineWidth)),

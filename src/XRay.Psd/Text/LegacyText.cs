@@ -36,11 +36,14 @@ internal static class LegacyText
         public PsdColor Color { get; set; } = PsdColor.Black;
 
         public byte AntiAlias { get; set; }
+
+        /// <summary>The document conversion for the record's color (null: the built-in formulas).</summary>
+        public Imaging.DocumentColors? Colors { get; init; }
     }
 
-    public static TextLayerInfo? Parse(ReadOnlyMemory<byte> payload)
+    public static TextLayerInfo? Parse(ReadOnlyMemory<byte> payload, Imaging.DocumentColors? colors = null)
     {
-        var record = ParseRecord(payload);
+        var record = ParseRecord(payload, colors);
         if (record is null || record.Styles.Count == 0 || record.Faces.Count == 0)
         {
             return null;
@@ -159,7 +162,7 @@ internal static class LegacyText
         };
     }
 
-    private static Record? ParseRecord(ReadOnlyMemory<byte> payload)
+    private static Record? ParseRecord(ReadOnlyMemory<byte> payload, Imaging.DocumentColors? colors)
     {
         try
         {
@@ -175,7 +178,7 @@ internal static class LegacyText
                 return null;
             }
 
-            var record = new Record { Transform = transform };
+            var record = new Record { Transform = transform, Colors = colors };
             _ = reader.ReadUInt16(); // font info version (6)
             var faceCount = reader.ReadUInt16();
             if (faceCount == 0 || faceCount * 15L > reader.Remaining)
@@ -308,7 +311,7 @@ internal static class LegacyText
                 return false;
             }
 
-            record.Color = ReadColor(reader);
+            record.Color = ReadColor(reader, record.Colors);
             record.AntiAlias = reader.ReadByte();
             record.Styles = styles;
             record.Lines = lines;
@@ -324,10 +327,13 @@ internal static class LegacyText
     /// Photoshop's 10-byte color: u16 space and four u16 components. 0 RGB, 1 HSB
     /// (hue over 0..65535 for 0..360 degrees), 2 CMYK stored inverted (65535 is no
     /// ink), 8 grayscale with the level on 0..10000. Mirrors
-    /// <c>read_legacy_effect_color</c> in .reference/src/psd/psd_layer_styles.cpp,
-    /// with the plain inverse-ink CMYK conversion.
+    /// <c>read_legacy_effect_color</c> in .reference/src/psd/psd_layer_styles.cpp:
+    /// with <paramref name="colors"/>, CMYK converts through the document's profile
+    /// like the pixels (the plain inverse-ink formula otherwise) and RGB through an
+    /// RGB document's profile; HSB and gray stay as they are, as in the reference.
+    /// The same record is the color of PS 5 <c>lrFX</c> effects.
     /// </summary>
-    internal static PsdColor ReadColor(BigEndianReader reader)
+    internal static PsdColor ReadColor(BigEndianReader reader, Imaging.DocumentColors? colors = null)
     {
         var space = reader.ReadUInt16();
         Span<ushort> c = [reader.ReadUInt16(), reader.ReadUInt16(), reader.ReadUInt16(), reader.ReadUInt16()];
@@ -357,6 +363,10 @@ internal static class LegacyText
                     return new PsdColor(Level(r), Level(g), Level(b));
                 }
 
+            case 2 when colors is not null:
+                return colors.FromInk(1 - (c[0] / 65535.0), 1 - (c[1] / 65535.0), 1 - (c[2] / 65535.0), 1 - (c[3] / 65535.0));
+            case 0 when colors is not null:
+                return colors.FromRgb(c[0] / 257, c[1] / 257, c[2] / 257);
             case 2:
                 {
                     // Stored inverted: the component is 1 - ink, so RGB = component x (1 - black ink).
