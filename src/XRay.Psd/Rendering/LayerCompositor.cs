@@ -495,7 +495,7 @@ internal sealed partial class LayerCompositor
     /// </summary>
     private PlanarImage? GradientFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor)
     {
-        var gradient = Gradient.FromDescriptor(descriptor);
+        var gradient = Gradient.FromDescriptor(descriptor, defaultAngle: 0);
         if (gradient is null)
         {
             return null;

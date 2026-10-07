@@ -48,21 +48,68 @@ internal static partial class Adjustments
         }
     }
 
-    /// <summary><c>apply_color_balance</c>: each midtone slider adds round(slider * 2.55) to its channel.</summary>
+    /// <summary>Input black points per shadows slider step (fitted, see <see cref="BuildColorBalanceLut"/>).</summary>
+    private const double ColorBalanceShadowStep = 2.18;
+
+    /// <summary>Input white points per highlights slider step (fitted).</summary>
+    private const double ColorBalanceHighlightStep = 1.26;
+
+    /// <summary>
+    /// Color Balance as three per-channel tables. The reference renders a flat
+    /// <c>round(slider * 2.55)</c> midtones offset, which is far from Photoshop; this model
+    /// is fitted to Photoshop's composites of photoshop-color-balance.psd (midtones only,
+    /// within 1/255) and photoshop-color-balance-full.psd (all three ranges and Preserve
+    /// Luminosity, within 2/255, mean 1.0). Each channel runs, in order:
+    /// <list type="number">
+    /// <item>Highlights, a Levels input white point: a slider toward the channel's own
+    /// color lowers its white by 1.26 levels per step; a slider of another channel toward
+    /// its complement (cyan, magenta, yellow) lowers this channel's white by half that.</item>
+    /// <item>Midtones, a gamma on the channel: <c>v' = (v/255)^(2^(-slider/100))</c>.</item>
+    /// <item>Shadows, a Levels input black point: a slider toward the complement raises the
+    /// channel's own black by 2.18 levels per step; a slider of another channel toward its
+    /// own color raises this channel's black by half that.</item>
+    /// </list>
+    /// So shadows only deepen and highlights only lift, and a shift toward a color moves the
+    /// other two channels half as far. The two step sizes and the stage order come from one
+    /// 8-color capture with Preserve Luminosity on, which the fit absorbs; the flag is not
+    /// modeled separately. See docs/adjustments.md.
+    /// </summary>
     internal static ChannelLuts BuildColorBalanceLut(ColorBalanceSettings settings)
     {
-        return new ChannelLuts(Offset(settings.CyanRed), Offset(settings.MagentaGreen), Offset(settings.YellowBlue));
-
-        static byte[] Offset(int slider)
+        var luts = new byte[3][];
+        for (var channel = 0; channel < 3; channel++)
         {
-            var delta = (int)Math.Round(Math.Clamp(slider, -100, 100) * 255.0 / 100.0, MidpointRounding.AwayFromZero);
+            var black = Math.Min(254.0, ColorBalanceShadowStep * Shift(settings.Shadows, channel, towardColor: false));
+            var white = Math.Max(1.0, 255.0 - (ColorBalanceHighlightStep * Shift(settings.Highlights, channel, towardColor: true)));
+            var gamma = Math.Pow(2.0, -Math.Clamp(settings.Midtones[channel], -100, 100) / 100.0);
             var lut = new byte[256];
             for (var v = 0; v < 256; v++)
             {
-                lut[v] = (byte)Math.Clamp(v + delta, 0, 255);
+                var x = Math.Min(255.0, v * 255.0 / white);
+                x = 255.0 * Math.Pow(x / 255.0, gamma);
+                x = Math.Max(0.0, (x - black) * 255.0 / (255.0 - black));
+                lut[v] = RoundByte(x);
             }
 
-            return lut;
+            luts[channel] = lut;
+        }
+
+        return new ChannelLuts(luts[0], luts[1], luts[2]);
+
+        // The slider steps that move one channel's point: its own slider in the given
+        // direction, plus half of every other slider in the opposite one.
+        static double Shift(ColorBalanceRange range, int channel, bool towardColor)
+        {
+            var total = 0.0;
+            for (var c = 0; c < 3; c++)
+            {
+                var slider = Math.Clamp(range[c], -100, 100);
+                var own = towardColor ? Math.Max(slider, 0) : Math.Max(-slider, 0);
+                var other = towardColor ? Math.Max(-slider, 0) : Math.Max(slider, 0);
+                total += c == channel ? own : 0.5 * other;
+            }
+
+            return total;
         }
     }
 

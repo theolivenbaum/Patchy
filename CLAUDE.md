@@ -24,7 +24,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/XRay.Psd/Descriptors/` | Action Manager descriptor reader (`Objc`, `VlLs`, `UntF`, `tdta`, `obj `...) |
 | `src/XRay.Psd/Text/` | `EngineData` parser, `TextLayerInfo` (TySh), `TextEngineBlock` (`Txt2`) and `TextEngineResolver`, `LegacyText` (PS 5 tySh), `TextExtractor`; see `docs/text.md` |
 | `src/XRay.Psd/Imaging/` | `RgbaImage` (public output), `PlanarImage` (internal float planes), `ColorSpaces`, `DocumentColors` (descriptor, text and pattern colors through the pixel transform), `Duotone`; `Icc/` holds the ICC parser and profile-to-sRGB transforms |
-| `src/XRay.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Bevel.cs`, `.Strokes.cs`, `.Blending.cs`), SIMD `BlendKernels`/`BlendOps`, `BlendIf`, `SpecialFill`, `MaskSampler`, `PathRasterizer`, `VectorStroker`, `EffectMasks`, `LayerEffects`, `Gradient`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
+| `src/XRay.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Bevel.cs`, `.Strokes.cs`, `.Blending.cs`), SIMD `BlendKernels`/`BlendOps`, `BlendIf`, `SpecialFill`, `MaskSampler`, `PathRasterizer`, `VectorStroker`, `EffectMasks`, `LayerEffects`, `Gradient`, `GradientNoise`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
 | `src/XRay.Psd/Codecs/` | Built-in `PngEncoder` and baseline `JpegEncoder` |
 | `src/XRay.Psd.Skia/` | Optional SkiaSharp interop (SKBitmap/SKImage, Skia encoders such as WebP) |
 | `src/XRay.Psd.Text/` | Optional type-layer re-rendering (SkiaSharp + HarfBuzz): `IFontResolver` (`FontCollection`, `SystemFontResolver`, aliases), `TextLayoutEngine`, `TextWarpMesh`, `TextLayerRenderer`, `TextLayerRasterizer`; see `docs/text-rendering.md` |
@@ -38,6 +38,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `tests/fixtures/psd-tools/` | Color-mode, bit-depth, smart-object and resource files from psd-tools (MIT, see `NOTICE` and its `LICENSE`) |
 | `docs/porting-map.md` | Which reference files each C# area came from, and what was deliberately left out |
 | `docs/rendering.md` | Compositor model, effect pipeline, calibration status |
+| `docs/adjustments.md` | Adjustment layers: payload layouts, models, accuracy against Photoshop, noise gradients |
 | `docs/text.md` | Text model: TySh, `Txt2`, PS 5 `tySh`, gap filling and extraction |
 | `docs/text-rendering.md` | Type-layer re-rendering: core hook, font resolution, Photoshop layout model, validation metrics |
 | `docs/color.md` | ICC color management: what converts (pixels and stored colors), duotone, Little CMS parity, accuracy |

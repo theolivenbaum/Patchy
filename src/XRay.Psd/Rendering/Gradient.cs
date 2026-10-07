@@ -40,7 +40,8 @@ internal readonly record struct GradientAlphaStop(float Location, float Opacity,
 /// (type, angle, scale, reverse, offset, alignment). Evaluation follows the
 /// reference: <c>gradient_position</c>, <c>gradient_color</c> and
 /// <c>gradient_stop_opacity</c> in .reference/src/core/blend_math.cpp. Noise
-/// gradients render as their stop fallback (black to white); see TODO.md.
+/// (<c>ClNs</c>) gradients evaluate the reference's deterministic noise field
+/// (<see cref="GradientNoise"/>).
 /// </summary>
 internal sealed class Gradient
 {
@@ -66,7 +67,16 @@ internal sealed class Gradient
 
     public float OffsetYPercent { get; init; }
 
-    public static Gradient? FromDescriptor(Descriptor effect)
+    /// <summary>Noise settings when the gradient form is <c>ClNs</c>; null for stop gradients.</summary>
+    public GradientNoise? Noise { get; init; }
+
+    /// <param name="effect">The effect or fill descriptor that holds <c>Grad</c> and the placement keys.</param>
+    /// <param name="defaultAngle">
+    /// Angle used when <c>Angl</c> is missing: 90 for layer effects, 0 for fill and
+    /// stroke content (reference <c>parse_fill_content</c>: Photoshop draws psd-tools'
+    /// gradient-styles.psd noise fills, which omit the key, as vertical bands).
+    /// </param>
+    public static Gradient? FromDescriptor(Descriptor effect, double defaultAngle = 90)
     {
         var type = effect.GetEnum("Type") switch
         {
@@ -89,13 +99,14 @@ internal sealed class Gradient
         {
             Type = type,
             Interpolation = interpolation,
-            AngleDegrees = (float)effect.GetNumber("Angl", 90),
+            AngleDegrees = (float)effect.GetNumber("Angl", defaultAngle),
             Scale = Math.Max(0.01f, (float)(effect.GetNumber("Scl ", 100) / 100)),
             Reverse = effect.GetBoolean("Rvrs"),
             AlignWithLayer = effect.GetBoolean("Algn", true),
             OffsetXPercent = (float)(offset?.GetNumber("Hrzn", 0) ?? 0),
             OffsetYPercent = (float)(offset?.GetNumber("Vrtc", 0) ?? 0),
             Smoothness = grad is null ? 1f : Math.Clamp((float)(grad.GetNumber("Intr", 4096) / 4096), 0f, 1f),
+            Noise = grad is not null && grad.GetEnum("GrdF") == "ClNs" ? GradientNoise.FromDescriptor(grad) : null,
         };
 
         if (grad?.GetList("Clrs") is { } colors)
@@ -211,6 +222,11 @@ internal sealed class Gradient
     /// <summary>Straight color at a ramp position, as [0,1] floats.</summary>
     public (float R, float G, float B) Color(float position, bool endpointSmoothing)
     {
+        if (Noise is { } noise)
+        {
+            return noise.Color(position);
+        }
+
         var stops = ColorStops;
         if (stops.Count == 0)
         {
@@ -278,6 +294,11 @@ internal sealed class Gradient
     /// <summary>Opacity at a ramp position.</summary>
     public float Opacity(float position, bool endpointSmoothing)
     {
+        if (Noise is { } noise)
+        {
+            return noise.AddTransparency ? (float)noise.Channel(3, position) : 1f;
+        }
+
         var stops = AlphaStops;
         if (stops.Count == 0)
         {
@@ -354,7 +375,7 @@ internal sealed class Gradient
         return value <= 0.04045 ? value / 12.92 : Math.Pow((value + 0.055) / 1.055, 2.4);
     }
 
-    private static class Oklab
+    internal static class Oklab
     {
         public static (float, float, float) Mix(PsdColor a, PsdColor b, float t)
         {
@@ -377,7 +398,7 @@ internal sealed class Gradient
                 (0.0259040371 * l) + (0.7827717662 * m) - (0.8086757660 * s));
         }
 
-        private static (float, float, float) FromOklab(double lightness, double a, double b)
+        public static (float, float, float) FromOklab(double lightness, double a, double b)
         {
             var l = lightness + (0.3963377774 * a) + (0.2158037573 * b);
             var m = lightness - (0.1055613458 * a) - (0.0638541728 * b);
