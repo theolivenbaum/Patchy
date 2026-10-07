@@ -64,6 +64,11 @@ public sealed class PsdDocument
 
     public IReadOnlyList<ImageResource> ImageResources { get; internal set; } = [];
 
+    private Resources.PsdImageResources? _resources;
+
+    /// <summary>Typed, lazily parsed views of the common image resources (resolution, guides, thumbnail, slices, layer comps, metadata).</summary>
+    public Resources.PsdImageResources Resources => LazyInitializer.EnsureInitialized(ref _resources, () => new Resources.PsdImageResources(this));
+
     /// <summary>Every layer record in file order (bottom to top), including group records but not the hidden group-end dividers.</summary>
     public IReadOnlyList<PsdLayer> Layers => _layers;
 

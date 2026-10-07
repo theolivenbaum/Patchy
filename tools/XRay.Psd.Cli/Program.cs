@@ -12,7 +12,9 @@ internal static class Cli
         psdtool - inspect, render and extract text from PSD/PSB files
 
         Usage:
-          psdtool info <file.psd>                     Print the header and layer tree
+          psdtool info <file.psd> [--resources] [--effects]
+                                                      Print the header and layer tree, plus the typed image
+                                                      resources and each layer's effects when asked
           psdtool text <file.psd> [--content-only]    Print all text (layer names, type layers, metadata...)
           psdtool render <file.psd> <out.png|out.jpg> [--layers|--merged] [--quality N] [--background RRGGBB]
           psdtool layers <file.psd> <out-dir>         Write each content layer as a PNG
@@ -30,7 +32,7 @@ internal static class Cli
         {
             return args[0] switch
             {
-                "info" => Info(args[1]),
+                "info" => Info(args[1], args.Contains("--resources"), args.Contains("--effects")),
                 "text" => Text(args[1], args.Contains("--content-only")),
                 "render" when args.Length >= 3 => Render(args[1], args[2], args[3..]),
                 "layers" when args.Length >= 3 => Layers(args[1], args[2]),
@@ -50,11 +52,15 @@ internal static class Cli
         return 2;
     }
 
-    private static int Info(string path)
+    private static int Info(string path, bool resources = false, bool effects = false)
     {
         var document = PsdDocument.Load(path);
         Console.WriteLine(document);
         Console.WriteLine($"merged image: {(document.HasRealMergedImage ? "real" : "placeholder")}, transparency: {document.MergedImageHasTransparency}");
+        if (resources)
+        {
+            InfoDetails.PrintResources(document);
+        }
         foreach (var layer in document.EnumerateLayersTopDown())
         {
             var depth = 0;
@@ -95,6 +101,10 @@ internal static class Cli
             }
 
             Console.WriteLine($"{new string(' ', depth * 2)}{layer.Kind,-11} \"{layer.Name}\" {layer.Bounds} {layer.BlendMode} op={layer.Opacity} fill={layer.FillOpacity} {string.Join(',', flags)}");
+            if (effects && layer.Style is { } style)
+            {
+                InfoDetails.PrintStyle(style, new string(' ', (depth * 2) + 2));
+            }
         }
 
         Console.WriteLine($"global blocks: {string.Join(' ', document.GlobalTaggedBlocks.Select(b => $"{b.Key}({b.Data.Length})"))}");

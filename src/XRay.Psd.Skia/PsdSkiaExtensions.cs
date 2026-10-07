@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using XRay.Psd.Imaging;
 using XRay.Psd.Rendering;
+using XRay.Psd.Resources;
 using SkiaSharp;
 
 namespace XRay.Psd.Skia;
@@ -68,6 +69,60 @@ public static class PsdSkiaExtensions
         using var skImage = image.ToSKImage();
         using var data = skImage.Encode(format, quality) ?? throw new NotSupportedException($"Skia cannot encode {format} on this platform.");
         return data.ToArray();
+    }
+
+    /// <summary>
+    /// Decodes the document thumbnail (<see cref="PsdImageResources.Thumbnail"/>):
+    /// the JPEG form through Skia, the raw form directly. Photoshop 4 thumbnails
+    /// (resource 1033) store BGR and are swapped to RGB. Returns null when the
+    /// payload does not decode.
+    /// </summary>
+    public static RgbaImage? Decode(this PsdThumbnail thumbnail)
+    {
+        ArgumentNullException.ThrowIfNull(thumbnail);
+        RgbaImage? image;
+        if (thumbnail.Format == PsdThumbnailFormat.Jpeg)
+        {
+            using var bitmap = SKBitmap.Decode(thumbnail.Data.Span);
+            image = bitmap?.ToRgbaImage();
+        }
+        else
+        {
+            image = DecodeRaw(thumbnail);
+        }
+
+        if (image is not null && thumbnail.IsBgr)
+        {
+            var pixels = image.Pixels;
+            for (var i = 0; i < pixels.Length; i += 4)
+            {
+                (pixels[i], pixels[i + 2]) = (pixels[i + 2], pixels[i]);
+            }
+        }
+
+        return image;
+    }
+
+    private static RgbaImage? DecodeRaw(PsdThumbnail thumbnail)
+    {
+        var rowBytes = thumbnail.RowBytes > 0 ? thumbnail.RowBytes : thumbnail.Width * 3;
+        if (thumbnail.BitsPerPixel != 24 || rowBytes < thumbnail.Width * 3 || (long)rowBytes * thumbnail.Height > thumbnail.Data.Length)
+        {
+            return null;
+        }
+
+        var data = thumbnail.Data.Span;
+        var image = new RgbaImage(thumbnail.Width, thumbnail.Height);
+        for (var y = 0; y < thumbnail.Height; y++)
+        {
+            var row = data.Slice(y * rowBytes, thumbnail.Width * 3);
+            for (var x = 0; x < thumbnail.Width; x++)
+            {
+                image.SetPixel(x, y, new PsdColor(row[x * 3], row[(x * 3) + 1], row[(x * 3) + 2]));
+            }
+        }
+
+        return image;
     }
 
     /// <summary>Renders the document and returns it as an <see cref="SKBitmap"/>.</summary>

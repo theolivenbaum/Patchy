@@ -108,6 +108,11 @@ public sealed class PsdLayer
     /// <summary>Whether the layer-effects descriptor marks its effects as visible.</summary>
     public bool EffectsVisible { get; internal set; }
 
+    private System.Runtime.CompilerServices.StrongBox<PsdLayerStyle?>? _style;
+
+    /// <summary>Typed read-only view of <see cref="Effects"/> (kind, switch, blend mode, opacity, color, size...), parsed on first use; null without effects.</summary>
+    public PsdLayerStyle? Style => LazyInitializer.EnsureInitialized(ref _style, () => new(PsdLayerStyle.Create(this))).Value;
+
     /// <summary>Smart-object placement descriptor (<c>SoLd</c>/<c>SoLE</c>/<c>PlLd</c>), when present.</summary>
     public Descriptor? SmartObject { get; internal set; }
 
