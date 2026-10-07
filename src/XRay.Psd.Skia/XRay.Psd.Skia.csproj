@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>XRay.Psd.Skia</RootNamespace>
+    <Description>SkiaSharp interop for XRay.Psd: SKBitmap/SKImage conversion and Skia encoders (WebP, AVIF, high-quality JPEG).</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="4.153.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../XRay.Psd/XRay.Psd.csproj" />
+  </ItemGroup>
+</Project>

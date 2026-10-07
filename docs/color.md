@@ -1,6 +1,6 @@
 # Color management
 
-How decoded pixels become sRGB, and how close that is to the reference. The code is in `src/Patchy.Psd/Imaging/` (`ColorSpaces.cs` and the `Icc/` folder). The reference converts through vendored Little CMS (lcms2) in `.reference/src/color/color_management.cpp`; this port reads ICC profiles itself and follows the same lcms2 semantics without porting lcms2.
+How decoded pixels become sRGB, and how close that is to the reference. The code is in `src/XRay.Psd/Imaging/` (`ColorSpaces.cs` and the `Icc/` folder). The reference converts through vendored Little CMS (lcms2) in `.reference/src/color/color_management.cpp`; this port reads ICC profiles itself and follows the same lcms2 semantics without porting lcms2.
 
 ## What converts
 

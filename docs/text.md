@@ -1,6 +1,6 @@
 # Text model
 
-How type layers and document text are read. Code lives in `src/Patchy.Psd/Text/`. Read this before changing text parsing or extraction.
+How type layers and document text are read. Code lives in `src/XRay.Psd/Text/`. Read this before changing text parsing or extraction.
 
 ## Records
 

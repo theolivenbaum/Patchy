@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/XRay.Psd.Skia/XRay.Psd.Skia.csproj" />
+    <Project Path="src/XRay.Psd/XRay.Psd.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/XRay.Psd.Skia.Tests/XRay.Psd.Skia.Tests.csproj" />
+    <Project Path="tests/XRay.Psd.Tests/XRay.Psd.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/XRay.Psd.Cli/XRay.Psd.Cli.csproj" />
+  </Folder>
+</Solution>

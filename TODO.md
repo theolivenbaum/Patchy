@@ -1,8 +1,8 @@
-# Patchy.Psd port backlog
+# XRay.Psd port backlog
 
 Ordered by impact within each section. The reference for every rendering item is the calibrated C++ code in `.reference/` (paths given). Check an item off by deleting it and noting anything non-obvious in `docs/`.
 
-Use the survey (`PATCHY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each item below names the fixtures it should fix. When a fixture starts matching Photoshop, add it to `RenderingTests`.
+Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each item below names the fixtures it should fix. When a fixture starts matching Photoshop, add it to `RenderingTests`.
 
 ## Done in the first pass
 

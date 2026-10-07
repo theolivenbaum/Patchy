@@ -1,6 +1,6 @@
 # Rendering
 
-How `PsdDocument.Render` produces pixels, and how close each part is to Photoshop. Read this before changing anything under `src/Patchy.Psd/Rendering/`.
+How `PsdDocument.Render` produces pixels, and how close each part is to Photoshop. Read this before changing anything under `src/XRay.Psd/Rendering/`.
 
 ## Sources
 
@@ -67,6 +67,6 @@ Strokes measure an exact Euclidean distance band from a 3x supersampled half-cov
 
 ## Status against Photoshop
 
-`RenderingTests` pins every fixture that matches; the survey (`PATCHY_PSD_SURVEY=1`, see CLAUDE.md) prints all of them. Exact or within anti-aliasing tolerance: group opacity, raster and vector masks (density and feather included), boolean shapes, solid, gradient and pattern fills, vector strokes on shape layers, channel restrictions, drop shadows, glows, inner shadows, overlays, satin, strokes, effects on groups and clip bases, smooth bevels, emboss, pillow emboss, bevel textures, Levels, Brightness/Contrast (legacy within 1/255), Hue/Saturation master (within 1/255 of the BMP) and colorize, Invert, Threshold, Posterize. Hue/Saturation bands are within 7/255 on feather ramps (mean 0.13), the reference's own residual. Curves and Exposure are pinned by the reference's Photoshop LUT captures (`AdjustmentTests`). Blend If is pinned by `BlendingTests` and `photoshop-blend-if-4b-roundtrip`. Known gaps are listed in `TODO.md`: Stroke Emboss, non-linear glow contours, knockout, Color Balance and the adjustments the reference does not model.
+`RenderingTests` pins every fixture that matches; the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) prints all of them. Exact or within anti-aliasing tolerance: group opacity, raster and vector masks (density and feather included), boolean shapes, solid, gradient and pattern fills, vector strokes on shape layers, channel restrictions, drop shadows, glows, inner shadows, overlays, satin, strokes, effects on groups and clip bases, smooth bevels, emboss, pillow emboss, bevel textures, Levels, Brightness/Contrast (legacy within 1/255), Hue/Saturation master (within 1/255 of the BMP) and colorize, Invert, Threshold, Posterize. Hue/Saturation bands are within 7/255 on feather ramps (mean 0.13), the reference's own residual. Curves and Exposure are pinned by the reference's Photoshop LUT captures (`AdjustmentTests`). Blend If is pinned by `BlendingTests` and `photoshop-blend-if-4b-roundtrip`. Known gaps are listed in `TODO.md`: Stroke Emboss, non-linear glow contours, knockout, Color Balance and the adjustments the reference does not model.
 
 Vector strokes: `photoshop-shape-strokes` matches its capture with max 39, mean 0.16 (the reference reached mean 0.3). Butt, square and round caps, miter, round and bevel joins, and inside, center and outside alignment on solid strokes are exact or within 8 levels; Photoshop's band edges that fall on half pixels carry a bias of about 1/32 px that is not modeled. The residual peaks are dash-edge pixels on the dashed curve, where Photoshop's arc-length walk differs by a fraction of a pixel. `patchy-open-path-strokes` reproduces its Patchy-written merged image (max 1).

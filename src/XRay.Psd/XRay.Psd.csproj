@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>XRay.Psd</RootNamespace>
+    <Description>Dependency-free PSD/PSB reader for .NET: layer tree, text extraction, SIMD compositing, PNG/JPEG output.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="XRay.Psd.Tests" />
+    <InternalsVisibleTo Include="XRay.Psd.Skia" />
+  </ItemGroup>
+</Project>

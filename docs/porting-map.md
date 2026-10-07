@@ -1,6 +1,6 @@
 # Porting map
 
-Where each part of the C# library came from in the reference tree (`.reference/`), and what was left behind. Paths on the left are under `src/Patchy.Psd/`.
+Where each part of the C# library came from in the reference tree (`.reference/`), and what was left behind. Paths on the left are under `src/XRay.Psd/`.
 
 | C# | Reference | Notes |
 |---|---|---|
