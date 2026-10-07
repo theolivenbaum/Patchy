@@ -20,6 +20,8 @@ public sealed class AdjustmentTests
     [InlineData("photoshop-brightness-contrast-legacy.psd", 1, 0.8)]    // legacy brit, +/-1 envelope
     [InlineData("photoshop-brightness-contrast-modern.psd", 0, 0.0)]    // CgEd modern algorithm
     [InlineData("photoshop-hue-saturation-colorize.psd", 0, 0.0)]       // colorize, masked
+    [InlineData("photoshop-color-balance.psd", 1, 0.25)]                // midtones gamma
+    [InlineData("photoshop-color-balance-full.psd", 2, 1.1)]            // all ranges, Preserve Luminosity (fitted)
     public void Adjustment_fixtures_match_the_saved_composite(string name, int maxDelta, double meanDelta)
     {
         var document = Fixtures.Load(name);
@@ -92,7 +94,9 @@ public sealed class AdjustmentTests
         var balance = BlockOf("photoshop-color-balance.psd", "Color Balance 1", "blnc");
         Assert.Equal(new ColorBalanceSettings(45, -25, 35), Adjustments.ParseColorBalance(balance.Data.Span));
         var fullBalance = BlockOf("photoshop-color-balance-full.psd", "Color Balance 1", "blnc");
-        Assert.Equal(new ColorBalanceSettings(45, -25, 35), Adjustments.ParseColorBalance(fullBalance.Data.Span));
+        Assert.Equal(
+            new ColorBalanceSettings(new(-10, 5, 15), new(45, -25, 35), new(-30, 20, -5), PreserveLuminosity: true),
+            Adjustments.ParseColorBalance(fullBalance.Data.Span));
 
         var levels = Adjustments.ParseLevels(BlockOf("photoshop-clipping-mask.psd", "Levels 1", "levl").Data.Span);
         Assert.NotNull(levels);
@@ -123,17 +127,81 @@ public sealed class AdjustmentTests
     }
 
     [Fact]
-    public void Color_balance_is_parsed_but_not_rendered()
+    public void Color_balance_midtones_are_a_per_channel_gamma()
     {
-        // The reference's midtones-only model is far from Photoshop on this fixture (max
-        // 98/255); leaving the layer out is closer (29/255) until it is calibrated.
-        var layer = Fixtures.Load("photoshop-color-balance.psd").Layers.Single(l => l.Name == "Color Balance 1");
-        Assert.Null(Adjustments.Create(layer));
-
+        // photoshop-color-balance.psd: Photoshop's composite of (45, -25, 35) midtones.
         var lut = Adjustments.BuildColorBalanceLut(new ColorBalanceSettings(45, -25, 35));
-        Assert.Equal(130, lut.Red[15]);   // 15 + round(45 * 2.55)
-        Assert.Equal(176, lut.Green[240]); // 240 - round(25 * 2.55)
-        Assert.Equal(255, lut.Blue[200]);
+        Assert.Equal(32, lut.Red[15]);
+        Assert.Equal(160, lut.Red[135]);
+        Assert.Equal(233, lut.Red[225]);
+        Assert.Equal(237, lut.Green[240]);
+        Assert.Equal(50, lut.Green[65]);
+        Assert.Equal(126, lut.Blue[104]);
+
+        // Zero sliders are the identity; the ends stay pinned under any midtones.
+        var identity = Adjustments.BuildColorBalanceLut(new ColorBalanceSettings(0, 0, 0));
+        var extreme = Adjustments.BuildColorBalanceLut(new ColorBalanceSettings(100, -100, 100));
+        for (var v = 0; v < 256; v++)
+        {
+            Assert.Equal(v, identity.Red[v]);
+            Assert.Equal(v, identity.Blue[v]);
+        }
+
+        Assert.Equal(0, extreme.Green[0]);
+        Assert.Equal(255, extreme.Green[255]);
+        Assert.True(extreme.Red[128] > 128 && extreme.Green[128] < 128);
+    }
+
+    [Fact]
+    public void Color_balance_shadows_deepen_and_highlights_lift()
+    {
+        // photoshop-color-balance-full.psd: shadows (-10, 5, 15), highlights (-30, 20, -5).
+        var full = new ColorBalanceSettings(new(-10, 5, 15), new(45, -25, 35), new(-30, 20, -5), PreserveLuminosity: true);
+        var lut = Adjustments.BuildColorBalanceLut(full);
+        (int In, int Out)[] red = [(15, 0), (45, 37), (75, 76), (105, 111), (135, 143), (165, 172), (195, 201), (225, 229)];
+        (int In, int Out)[] green = [(240, 255), (215, 255), (190, 230), (165, 190), (140, 152), (115, 115), (90, 82), (65, 50)];
+        (int In, int Out)[] blue = [(20, 33), (32, 48), (44, 64), (56, 78), (68, 91), (80, 105), (92, 118), (104, 131)];
+        foreach (var (input, output) in red)
+        {
+            Assert.InRange(lut.Red[input], output - 2, output + 2);
+        }
+
+        foreach (var (input, output) in green)
+        {
+            Assert.InRange(lut.Green[input], output - 2, output + 2);
+        }
+
+        foreach (var (input, output) in blue)
+        {
+            Assert.InRange(lut.Blue[input], output - 2, output + 2);
+        }
+
+        // Shadows only lower a channel and highlights only raise it.
+        var shadows = Adjustments.BuildColorBalanceLut(new ColorBalanceSettings(new(40, -20, 0), default, default, false));
+        var highlights = Adjustments.BuildColorBalanceLut(new ColorBalanceSettings(default, default, new(40, -20, 0), false));
+        for (var v = 0; v < 256; v++)
+        {
+            Assert.True(shadows.Red[v] <= v && shadows.Green[v] <= v && shadows.Blue[v] <= v);
+            Assert.True(highlights.Red[v] >= v && highlights.Green[v] >= v && highlights.Blue[v] >= v);
+        }
+
+        // Extreme sliders keep the tables monotonic and in range.
+        var extreme = Adjustments.BuildColorBalanceLut(new ColorBalanceSettings(new(-100, -100, -100), new(100, 100, 100), new(100, 100, 100), true));
+        for (var v = 1; v < 256; v++)
+        {
+            Assert.True(extreme.Red[v] >= extreme.Red[v - 1]);
+        }
+    }
+
+    [Fact]
+    public void Color_balance_short_payloads_keep_midtones_only()
+    {
+        byte[] midtonesOnly = [0, 0, 0, 0, 0, 0, 0, 45, 0xFF, 0xE7, 0, 35];
+        Assert.Equal(new ColorBalanceSettings(45, -25, 35), Adjustments.ParseColorBalance(midtonesOnly));
+        Assert.Null(Adjustments.ParseColorBalance(midtonesOnly.AsSpan(0, 11)));
+        var image = RenderOverGray(100, ("blnc", midtonesOnly));
+        var expected = Adjustments.BuildColorBalanceLut(new ColorBalanceSettings(45, -25, 35));
+        Assert.Equal(new PsdColor(expected.Red[100], expected.Green[100], expected.Blue[100]), image.GetPixel(0, 0));
     }
 
     // ---- Curves -----------------------------------------------------------------------

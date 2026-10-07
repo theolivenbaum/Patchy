@@ -50,6 +50,17 @@ internal static class Fixtures
             .OfType<string>()
             .Order(StringComparer.Ordinal);
 
+    /// <summary>
+    /// A machine-local fixture under local-test-fixtures/ at the repository root (gitignored),
+    /// or null when it is not there. Tests that use one skip without it.
+    /// </summary>
+    public static string? LocalPath(string relative)
+    {
+        var root = new DirectoryInfo(Root.Value).Parent!.Parent!.Parent!.FullName;
+        var path = System.IO.Path.Combine(root, "local-test-fixtures", relative);
+        return File.Exists(path) ? path : null;
+    }
+
     /// <summary>Writes a diagnostic image under test-output/ at the repository root.</summary>
     public static void SaveArtifact(string name, RgbaImage image)
     {

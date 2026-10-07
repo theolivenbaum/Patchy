@@ -19,10 +19,11 @@ internal interface IAdjustment
 /// .reference/src/core/adjustment_layer.cpp and .reference/docs/adjustments-calibration.md.
 /// </summary>
 /// <remarks>
-/// Not modeled, as in the reference: Vibrance, Black and White, Channel Mixer, Photo
-/// Filter, Gradient Map, Selective Color and Color Lookup (those layers render as no-ops),
-/// and the ink-space evaluation of CMYK and gray documents (which needs their ICC
-/// profiles). Color Balance is parsed but not rendered (see the <c>blnc</c> case).
+/// Beyond the reference: Color Balance (fitted to Photoshop captures), Vibrance, Black and
+/// White, Channel Mixer, Photo Filter and Gradient Map (<c>Adjustments.Color.cs</c>; see
+/// docs/adjustments.md for each one's status). Selective Color is parsed but not
+/// rendered, and Color Lookup is a no-op. The ink-space evaluation of CMYK and gray
+/// documents (which needs their ICC profiles) is not modeled.
 /// </remarks>
 internal static partial class Adjustments
 {
@@ -45,13 +46,17 @@ internal static partial class Adjustments
                 "levl" => ParseLevels(data) is { } levelsSettings ? LutAdjustment.From(BuildLevelsLut(ForDocument(layer, levelsSettings))) : null,
                 "curv" => ParseCurves(data) is { } curves ? LutAdjustment.From(BuildCurvesLut(ForDocument(layer, curves))) : null,
                 "hue2" or "hue " => ParseHueSaturation(data) is { } hue ? new HueSaturationAdjustment(hue) : null,
-                // Color Balance stays unrendered on purpose: the reference's midtones-only
-                // model (BuildColorBalanceLut) adds round(slider * 2.55) flat, which is far
-                // from Photoshop (max 98/255 off on photoshop-color-balance.psd, against 29
-                // for leaving the layer out). See TODO.md.
-                "blnc" => null,
+                "blnc" => ParseColorBalance(data) is { } balance ? LutAdjustment.From(BuildColorBalanceLut(balance)) : null,
                 "brit" => ResolveBrightnessContrast(layer, data) is { } bc ? LutAdjustment.Uniform(BuildBrightnessContrastLut(bc)) : null,
                 "expA" => ParseExposure(data) is { } exposure ? LutAdjustment.Uniform(BuildExposureLut(exposure)) : null,
+                "mixr" => ParseChannelMixer(data) is { } mixer ? new PixelAdjustment<ChannelMixerMap>(new(mixer)) : null,
+                "blwh" => block is not null && ParseBlackWhite(block.Data) is { } blackWhite ? new PixelAdjustment<BlackWhiteMap>(new(blackWhite)) : null,
+                // Selective Color stays unrendered: SelectiveColorValue is a reverse-engineered
+                // model with no Photoshop capture to measure it against (docs/adjustments.md).
+                "selc" => null,
+                "grdm" => ParseGradientMap(data) is { } map ? GradientMapAdjustment(map.Gradient, map.Reverse) : null,
+                "phfl" => ParsePhotoFilter(data) is { } filter ? new PixelAdjustment<PhotoFilterMap>(new(filter)) : null,
+                "vibA" => block is not null && ParseVibrance(block.Data) is { } vibrance ? new PixelAdjustment<VibranceMap>(new(vibrance)) : null,
                 _ => null,
             };
         }
@@ -61,6 +66,12 @@ internal static partial class Adjustments
             // layer path instead of guessing settings.
             return null;
         }
+    }
+
+    private static PixelAdjustment<GradientMapMap> GradientMapAdjustment(Gradient gradient, bool reverse)
+    {
+        var luts = BuildGradientMapLut(gradient, reverse);
+        return new PixelAdjustment<GradientMapMap>(new(luts.Red, luts.Green, luts.Blue));
     }
 
     /// <summary>

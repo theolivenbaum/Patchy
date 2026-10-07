@@ -76,8 +76,21 @@ internal sealed record HueSaturationSettings
     public HueSaturationBand[] Bands { get; init; } = Adjustments.DefaultHueSaturationBands();
 }
 
-/// <summary>Color Balance midtones (the only range the reference renders).</summary>
-internal readonly record struct ColorBalanceSettings(int CyanRed, int MagentaGreen, int YellowBlue);
+/// <summary>One Color Balance tone range: the Cyan-Red, Magenta-Green and Yellow-Blue sliders (-100..100).</summary>
+internal readonly record struct ColorBalanceRange(int CyanRed, int MagentaGreen, int YellowBlue)
+{
+    public int this[int channel] => channel switch { 0 => CyanRed, 1 => MagentaGreen, _ => YellowBlue };
+}
+
+/// <summary>Color Balance: shadows, midtones and highlights plus Preserve Luminosity.</summary>
+internal readonly record struct ColorBalanceSettings(ColorBalanceRange Shadows, ColorBalanceRange Midtones, ColorBalanceRange Highlights, bool PreserveLuminosity)
+{
+    /// <summary>A midtones-only setting with Preserve Luminosity off.</summary>
+    public ColorBalanceSettings(int cyanRed, int magentaGreen, int yellowBlue)
+        : this(default, new ColorBalanceRange(cyanRed, magentaGreen, yellowBlue), default, false)
+    {
+    }
+}
 
 /// <summary>Brightness/Contrast; legacy ranges -100..100, modern brightness -150..150 and contrast -50..100.</summary>
 internal readonly record struct BrightnessContrastSettings(int Brightness, int Contrast, bool UseLegacy);
@@ -192,9 +205,10 @@ internal static partial class Adjustments
     }
 
     /// <summary>
-    /// <c>blnc</c>: shadows, midtones and highlights as three i16 triples plus a Preserve
-    /// Luminosity byte. The reference models the midtones triple only (the shadows,
-    /// highlights and luminosity bytes are preserved but not rendered).
+    /// <c>blnc</c>: shadows, midtones and highlights as three i16 triples (Cyan-Red,
+    /// Magenta-Green, Yellow-Blue) plus a Preserve Luminosity byte, 20 bytes in all.
+    /// A payload cut after the midtones (the reference's minimum, 12 bytes) keeps zero
+    /// highlights and Preserve Luminosity off.
     /// </summary>
     internal static ColorBalanceSettings? ParseColorBalance(ReadOnlySpan<byte> data)
     {
@@ -203,7 +217,11 @@ internal static partial class Adjustments
             return null;
         }
 
-        return new ColorBalanceSettings(ReadClampedInt16(data, 6, 100), ReadClampedInt16(data, 8, 100), ReadClampedInt16(data, 10, 100));
+        return new ColorBalanceSettings(BalanceRange(data, 0), BalanceRange(data, 6), BalanceRange(data, 12), data.Length > 18 && data[18] != 0);
+
+        static ColorBalanceRange BalanceRange(ReadOnlySpan<byte> data, int offset) => data.Length >= offset + 6
+            ? new ColorBalanceRange(ReadClampedInt16(data, offset, 100), ReadClampedInt16(data, offset + 2, 100), ReadClampedInt16(data, offset + 4, 100))
+            : default;
     }
 
     /// <summary>

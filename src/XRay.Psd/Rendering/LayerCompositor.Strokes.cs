@@ -172,7 +172,7 @@ internal sealed partial class LayerCompositor
 
             case "GdFl":
                 {
-                    if (Gradient.FromDescriptor(descriptor) is not { } gradient)
+                    if (Gradient.FromDescriptor(descriptor, defaultAngle: 0) is not { } gradient)
                     {
                         return null;
                     }
