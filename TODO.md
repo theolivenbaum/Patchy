@@ -48,16 +48,16 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 
 ## Performance and scale
 
-- Parallelize the compositor by row strips (`Parallel.For`) once effects exist; the per-row kernels are already independent.
-- Tile the canvas instead of whole-document float planes (16 bytes per pixel today) for very large PSBs.
-- PSB files over 2 GB: memory-map instead of `File.ReadAllBytes`.
-- Vectorize the remaining scalar loops: RGBA interleave in `PlanarImage.ToRgba`, Lab conversion, 16-bit prediction, PNG Paeth filter.
-- Benchmarks (BenchmarkDotNet in a separate project) for decode, composite and encode.
+Benchmarks, the parallel model and the loading paths are described in [docs/performance.md](docs/performance.md).
+
+- **Tile the canvas.** Every buffer (canvas, isolated groups, clip runs, effect domains) is a whole-region float plane at 16 bytes per pixel, and `PlanarImage` counts pixels in an `int`, so documents above about 46000 x 46000 cannot render and a 30000 x 30000 PSD needs about 14 GB per buffer. Design: render in horizontal bands of full width. Each band composites the layer tree for its rows plus a halo as deep as the largest reach that reads across rows (mask feather, effect blur and spread, bevel size, stroke width, Satin offset) and keeps only its own rows; row-local work (blending, adjustments, Blend If) needs no halo. RLE channels decode only the band's rows through the row-count table; ZIP channels inflate once into bytes (or re-inflate per band). Output goes into the `RgbaImage` (4 bytes per pixel) or straight into a streaming PNG writer. This threads a band rectangle through `CompositeList` and clips every `PlanarImage` allocation to it, which touches the compositor and every effect file, so it waits until the effect work settles.
+- **Windowed PSB limits** (files over 2 GB already memory-map and parse with 64-bit offsets): a single channel over 2 GB reads as empty, the merged image decodes from its first 2 GB, and a `Lr16`/`Lr32` global block over 2 GB is skipped. Lifting these needs channel decoding from a stream of windows instead of one span.
+- Parallelize the row loops inside `LayerCompositor.Effects.cs`, `.Bevel.cs` and `.Strokes.cs` (only the `EffectMasks` helpers they call are parallel now), the per-pixel gradient and pattern fill synthesis in `LayerCompositor.cs`, and `PathRasterizer` scanlines. Each needs the same bit-identity test as `ParallelismTests`.
+- JPEG entropy coding is sequential; restart markers would let MCU-row segments encode in parallel (the output bytes would change).
 
 ## API and packaging
 
 - Typed parsers for common image resources (resolution, guides, thumbnail, slices, layer comps) and for effect descriptors.
-- `PsdDocument.LoadAsync` and a stream-based loader that avoids the extra copy.
 - PSD writing (the reference writer is `.reference/src/psd/psd_document_io.cpp` plus `.reference/docs/ps-compat.md`; every written file must open in Photoshop without warnings).
 - NuGet packaging (README, icon, source link) and a new CI workflow. The reference repository's workflows were disabled on purpose; add new ones under `.github/workflows/` only when asked.
 

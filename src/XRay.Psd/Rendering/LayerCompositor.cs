@@ -419,6 +419,7 @@ internal sealed partial class LayerCompositor
         }
 
         var decoded = new PlanarImage?[layers.Count];
+        var succeeded = new bool[layers.Count];
         var area = 0L;
         foreach (var layer in layers)
         {
@@ -429,13 +430,24 @@ internal sealed partial class LayerCompositor
         {
             for (var i = start; i < end; i++)
             {
-                decoded[i] = layers[i].DecodePixels();
+                try
+                {
+                    decoded[i] = layers[i].DecodePixels();
+                    succeeded[i] = true;
+                }
+                catch (PsdFormatException)
+                {
+                    // Left to LayerPixels: a damaged layer fails the render only if it is drawn.
+                }
             }
         });
 
         for (var i = 0; i < layers.Count; i++)
         {
-            _prefetched[layers[i]] = decoded[i];
+            if (succeeded[i])
+            {
+                _prefetched[layers[i]] = decoded[i];
+            }
         }
     }
 

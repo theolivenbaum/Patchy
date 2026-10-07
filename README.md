@@ -52,6 +52,19 @@ foreach (var layer in document.EnumerateLayersTopDown())
 }
 ```
 
+Loading and threading:
+
+```csharp
+// Read asynchronously, or map a large file instead of reading it (dispose to release the mapping).
+var fromStream = await PsdDocument.LoadAsync(stream, cancellationToken: token);
+using var mapped = PsdDocument.Load("huge.psb", new PsdLoadOptions { MemoryMap = true });
+
+// Rendering uses every processor by default; the result is the same at any degree.
+var image = mapped.Render(new RenderOptions { MaxDegreeOfParallelism = 1 });
+```
+
+Files of 2 GB and more are always memory-mapped and parsed with 64-bit offsets. See `docs/performance.md` for the limits, the parallel model and the benchmarks.
+
 Command line:
 
 ```bash
@@ -66,6 +79,8 @@ dotnet run --project tools/XRay.Psd.Cli -- render file.psd out.png --layers
 dotnet build XRay.Psd.slnx -c Release
 dotnet test --solution XRay.Psd.slnx -c Release
 ```
+
+Benchmarks (BenchmarkDotNet): `dotnet run -c Release --project benchmarks/XRay.Psd.Benchmarks -- --filter "*" --job short`.
 
 Tests run every committed fixture in `tests/fixtures/psd` (parse, decode, truncation robustness), compare renders with Photoshop's own captures, and cover the formats without fixtures through a synthetic PSD writer.
 
