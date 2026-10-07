@@ -6,7 +6,7 @@ It is a port of the PSD engine in Patchy, a C++ image editor whose source is kep
 
 ## Features
 
-- PSD and PSB, 1/8/16/32 bits per channel, RGB, grayscale, bitmap, indexed, CMYK, Lab, duotone (as gray) and multichannel.
+- PSD and PSB, 1/8/16/32 bits per channel, RGB, grayscale, bitmap, indexed, CMYK, Lab, duotone and multichannel.
 - Raw, RLE, ZIP and ZIP-with-prediction channel data.
 - Layer tree with groups, blend modes, opacity, fill, clipping, raster masks and vector masks.
 - Rendering from the merged image Photoshop saved, or from the layers with a compositor that follows Photoshop's blending rules.
