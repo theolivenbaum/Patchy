@@ -603,6 +603,9 @@ internal static class PsdParser
                 case "vsms":
                     layer.VectorMask ??= VectorPath.ParseVectorMask(data.Span, document.Width, document.Height);
                     break;
+                case "vstk":
+                    layer.VectorStroke ??= VectorStrokeStyle.Parse(data);
+                    break;
                 case "lfx2":
                 case "lfxs":
                 case "lmfx":

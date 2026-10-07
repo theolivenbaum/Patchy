@@ -327,7 +327,11 @@ internal sealed partial class LayerCompositor
         }
 
         MaskSampler? vector = null;
-        if (layer.RenderedVectorMask is { } rendered)
+        if (ShapeOwnsVectorMask(layer))
+        {
+            // A stroked shape's pixels already carry its path (LayerCompositor.Strokes.cs).
+        }
+        else if (layer.RenderedVectorMask is { } rendered)
         {
             vector = MaskSampler.FromRenderedVectorMask(layer, rendered, _canvas);
         }
@@ -355,7 +359,11 @@ internal sealed partial class LayerCompositor
         }
 
         var pixels = layer.DecodePixels();
-        if (layer.Kind == PsdLayerKind.Fill && layer.FillColor is { } color && (pixels is null || IsEmptyCoverage(pixels)))
+        if (layer.Kind == PsdLayerKind.Fill && (pixels is null || IsEmptyCoverage(pixels)) && StrokedShapePixels(layer) is { } shape)
+        {
+            pixels = shape;
+        }
+        else if (layer.Kind == PsdLayerKind.Fill && layer.FillColor is { } color && (pixels is null || IsEmptyCoverage(pixels)))
         {
             // Fill layers render their content from the fill settings; files that
             // carry no channel data get a canvas-wide solid fill that the vector
