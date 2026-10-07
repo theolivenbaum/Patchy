@@ -1,3 +1,5 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
 using XRay.Psd.Codecs;
 
 namespace XRay.Psd.Imaging;
@@ -54,7 +56,24 @@ public sealed class RgbaImage
     {
         get
         {
-            for (var i = 3; i < Pixels.Length; i += 4)
+            var i = 0;
+            if (Vector.IsHardwareAccelerated && BitConverter.IsLittleEndian)
+            {
+                // Alpha is the high byte of each little-endian RGBA word.
+                var words = MemoryMarshal.Cast<byte, uint>(Pixels.AsSpan());
+                var opaque = new Vector<uint>(0xFF000000u);
+                for (; i <= words.Length - Vector<uint>.Count; i += Vector<uint>.Count)
+                {
+                    if (!Vector.EqualsAll(new Vector<uint>(words[i..]) & opaque, opaque))
+                    {
+                        return false;
+                    }
+                }
+
+                i *= 4;
+            }
+
+            for (i += 3; i < Pixels.Length; i += 4)
             {
                 if (Pixels[i] != 255)
                 {
@@ -72,15 +91,18 @@ public sealed class RgbaImage
         var result = new RgbaImage(Width, Height);
         var source = Pixels;
         var target = result.Pixels;
-        for (var i = 0; i < source.Length; i += 4)
+        Parallelism.For(Height, Width, (first, last) =>
         {
-            int a = source[i + 3];
-            var inverse = 255 - a;
-            target[i] = (byte)(((source[i] * a) + (background.R * inverse) + 127) / 255);
-            target[i + 1] = (byte)(((source[i + 1] * a) + (background.G * inverse) + 127) / 255);
-            target[i + 2] = (byte)(((source[i + 2] * a) + (background.B * inverse) + 127) / 255);
-            target[i + 3] = 255;
-        }
+            for (var i = first * Width * 4; i < last * Width * 4; i += 4)
+            {
+                int a = source[i + 3];
+                var inverse = 255 - a;
+                target[i] = (byte)(((source[i] * a) + (background.R * inverse) + 127) / 255);
+                target[i + 1] = (byte)(((source[i + 1] * a) + (background.G * inverse) + 127) / 255);
+                target[i + 2] = (byte)(((source[i + 2] * a) + (background.B * inverse) + 127) / 255);
+                target[i + 3] = 255;
+            }
+        });
 
         return result;
     }

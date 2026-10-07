@@ -257,7 +257,13 @@ internal sealed class IccSrgbTransform
         {
             // Pixels are independent, so chunking never changes the output.
             var chunks = (count + ParallelChunk - 1) / ParallelChunk;
-            Parallel.For(0, chunks, chunk => ApplyRange(tables, planes, image, chunk * ParallelChunk, Math.Min(count, (chunk + 1) * ParallelChunk)));
+            Parallelism.For(chunks, ParallelChunk, (first, last) =>
+            {
+                for (var chunk = first; chunk < last; chunk++)
+                {
+                    ApplyRange(tables, planes, image, chunk * ParallelChunk, Math.Min(count, (chunk + 1) * ParallelChunk));
+                }
+            });
         }
 
         return true;

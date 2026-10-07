@@ -1,4 +1,6 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace XRay.Psd.Imaging;
 
@@ -65,34 +67,74 @@ internal sealed class PlanarImage
         }
 
         var width = overlap.Width;
-        var r = new byte[width];
-        var g = new byte[width];
-        var b = new byte[width];
-        var a = new byte[width];
         var pixels = output.Pixels;
-        for (var y = overlap.Top; y < overlap.Bottom; y++)
+        Parallelism.For(overlap.Height, width, (start, end) =>
         {
-            var source = RowOffset(y, overlap.Left);
-            UnitFloatToBytes(R.AsSpan(source, width), r);
-            UnitFloatToBytes(G.AsSpan(source, width), g);
-            UnitFloatToBytes(B.AsSpan(source, width), b);
-            UnitFloatToBytes(A.AsSpan(source, width), a);
-            var target = (((y - rect.Top) * rect.Width) + (overlap.Left - rect.Left)) * 4;
-            for (var x = 0; x < width; x++, target += 4)
+            for (var y = overlap.Top + start; y < overlap.Top + end; y++)
             {
-                if (a[x] == 0)
-                {
-                    continue;
-                }
+                var source = RowOffset(y, overlap.Left);
+                var target = (((y - rect.Top) * rect.Width) + (overlap.Left - rect.Left)) * 4;
+                InterleaveRow(R.AsSpan(source, width), G.AsSpan(source, width), B.AsSpan(source, width), A.AsSpan(source, width), pixels.AsSpan(target, width * 4));
+            }
+        });
 
-                pixels[target] = r[x];
-                pixels[target + 1] = g[x];
-                pixels[target + 2] = b[x];
-                pixels[target + 3] = a[x];
+        return output;
+    }
+
+    /// <summary>
+    /// Rounds four float planes to bytes and interleaves them as RGBA; fully transparent
+    /// pixels stay zero. Each lane packs <c>r | g &lt;&lt; 8 | b &lt;&lt; 16 | a &lt;&lt; 24</c> in a
+    /// <see cref="Vector{T}"/> of 32-bit words, using the same rounding as
+    /// <see cref="UnitFloatToBytes"/> (vector lanes for whole vectors, the scalar formula for the tail).
+    /// </summary>
+    internal static void InterleaveRow(ReadOnlySpan<float> r, ReadOnlySpan<float> g, ReadOnlySpan<float> b, ReadOnlySpan<float> a, Span<byte> rgba)
+    {
+        var width = a.Length;
+        var x = 0;
+        if (Vector.IsHardwareAccelerated && BitConverter.IsLittleEndian && width >= Vector<float>.Count)
+        {
+            var count = Vector<float>.Count;
+            var words = MemoryMarshal.Cast<byte, uint>(rgba);
+            var scale = new Vector<float>(255f);
+            var half = new Vector<float>(0.5f);
+            var max = new Vector<float>(255f);
+            var low = new Vector<uint>(0xFF);
+            for (; x <= width - count; x += count)
+            {
+                var vr = ToByteLanes(new Vector<float>(r[x..]), scale, half, max) & low;
+                var vg = ToByteLanes(new Vector<float>(g[x..]), scale, half, max) & low;
+                var vb = ToByteLanes(new Vector<float>(b[x..]), scale, half, max) & low;
+                var va = ToByteLanes(new Vector<float>(a[x..]), scale, half, max) & low;
+                var packed = vr | (vg << 8) | (vb << 16) | (va << 24);
+                Vector.ConditionalSelect(Vector.Equals(va, Vector<uint>.Zero), Vector<uint>.Zero, packed).CopyTo(words[x..]);
             }
         }
 
-        return output;
+        for (var target = x * 4; x < width; x++, target += 4)
+        {
+            var alpha = ToByte(a[x]);
+            if (alpha == 0)
+            {
+                rgba.Slice(target, 4).Clear();
+                continue;
+            }
+
+            rgba[target] = ToByte(r[x]);
+            rgba[target + 1] = ToByte(g[x]);
+            rgba[target + 2] = ToByte(b[x]);
+            rgba[target + 3] = alpha;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector<uint> ToByteLanes(Vector<float> value, Vector<float> scale, Vector<float> half, Vector<float> max) =>
+        Vector.AsVectorUInt32(Vector.ConvertToInt32(Vector.Min(Vector.Max((value * scale) + half, Vector<float>.Zero), max)));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static byte ToByte(float value)
+    {
+        var v = (value * 255f) + 0.5f;
+        return v <= 0 ? (byte)0 : v >= 255 ? (byte)255 : (byte)v;
     }
 
     /// <summary>SIMD conversion of [0,1] floats to rounded, clamped bytes.</summary>

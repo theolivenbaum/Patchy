@@ -143,23 +143,56 @@ internal static class ColorSpaces
 
     private static void IndexedToRgb(float[] indices, PsdColor[]? palette, PlanarImage image)
     {
-        for (var i = 0; i < indices.Length; i++)
+        Parallelism.For(indices.Length, 4, (start, end) =>
         {
-            var index = (int)MathF.Round(indices[i] * 255f);
-            if (palette is not null && index < palette.Length)
+            for (var i = start; i < end; i++)
             {
-                var color = palette[index];
-                image.R[i] = color.R / 255f;
-                image.G[i] = color.G / 255f;
-                image.B[i] = color.B / 255f;
+                var index = (int)MathF.Round(indices[i] * 255f);
+                if (palette is not null && index < palette.Length)
+                {
+                    var color = palette[index];
+                    image.R[i] = color.R / 255f;
+                    image.G[i] = color.G / 255f;
+                    image.B[i] = color.B / 255f;
+                }
             }
-        }
+        });
     }
 
-    private static void LabToRgb(float[] l, float[] a, float[] b, int depth, PlanarImage image)
+    private static void LabToRgb(float[] l, float[] a, float[] b, int depth, PlanarImage image) =>
+        Parallelism.For(l.Length, 64, (start, end) => LabToRgbRange(l, a, b, depth, image, start, end));
+
+    /// <summary>
+    /// Lab to sRGB over [start, end). The arithmetic before the transfer curve runs on
+    /// <see cref="Vector{T}"/> doubles with the scalar formula's exact operation order
+    /// (no fused multiply-add), so every lane matches <see cref="LabToSrgb"/> bit for bit.
+    /// </summary>
+    private static void LabToRgbRange(float[] l, float[] a, float[] b, int depth, PlanarImage image, int start, int end)
     {
         // 8-bit: a/b bytes are offset by 128. 16-bit: 0..32768 maps L, a/b center on 16384*2.
-        for (var i = 0; i < l.Length; i++)
+        var i = start;
+        var lanes = Vector<double>.Count;
+        var step = Vector<float>.Count;
+        if (Vector.IsHardwareAccelerated && end - start >= step)
+        {
+            Span<double> linear = stackalloc double[3 * step];
+            for (; i <= end - step; i += step)
+            {
+                Vector.Widen(new Vector<float>(l, i), out var l0, out var l1);
+                Vector.Widen(new Vector<float>(a, i), out var a0, out var a1);
+                Vector.Widen(new Vector<float>(b, i), out var b0, out var b1);
+                LabToLinear(l0, a0, b0, depth, linear, 0);
+                LabToLinear(l1, a1, b1, depth, linear, lanes);
+                for (var k = 0; k < step; k++)
+                {
+                    image.R[i + k] = (float)Math.Clamp(EncodeSrgb(linear[k]), 0, 1);
+                    image.G[i + k] = (float)Math.Clamp(EncodeSrgb(linear[step + k]), 0, 1);
+                    image.B[i + k] = (float)Math.Clamp(EncodeSrgb(linear[(2 * step) + k]), 0, 1);
+                }
+            }
+        }
+
+        for (; i < end; i++)
         {
             var lightness = l[i] * 100.0;
             double aa, bb;
@@ -179,6 +212,39 @@ internal static class ColorSpaces
             image.G[i] = (float)Math.Clamp(g, 0, 1);
             image.B[i] = (float)Math.Clamp(bl, 0, 1);
         }
+    }
+
+    // Vector form of LabToSrgb up to linear sRGB; writes R, G and B lanes at offset, step and 2*step.
+    private static void LabToLinear(Vector<double> l, Vector<double> a, Vector<double> b, int depth, Span<double> linear, int offset)
+    {
+        const double Delta = 6.0 / 29.0;
+        const double Slope = 3 * (6.0 / 29.0) * (6.0 / 29.0);
+        var step = linear.Length / 3;
+        var lightness = l * 100.0;
+        Vector<double> aa, bb;
+        if (depth == 16)
+        {
+            aa = (a * 65535.0 / 257.0) - new Vector<double>(128.0);
+            bb = (b * 65535.0 / 257.0) - new Vector<double>(128.0);
+        }
+        else
+        {
+            aa = (a * 255.0) - new Vector<double>(128.0);
+            bb = (b * 255.0) - new Vector<double>(128.0);
+        }
+
+        var fy = (lightness + new Vector<double>(16.0)) / 116.0;
+        var fx = fy + (aa / 500.0);
+        var fz = fy - (bb / 200.0);
+        static Vector<double> Finv(Vector<double> t) =>
+            Vector.ConditionalSelect(Vector.GreaterThan(t, new Vector<double>(Delta)), t * t * t, Slope * (t - new Vector<double>(4.0 / 29.0)));
+
+        var x = 0.96422 * Finv(fx);
+        var y = 1.00000 * Finv(fy);
+        var z = 0.82521 * Finv(fz);
+        ((3.1338561 * x) - (1.6168667 * y) - (0.4906146 * z)).CopyTo(linear[offset..]);
+        ((-0.9787684 * x) + (1.9161415 * y) + (0.0334540 * z)).CopyTo(linear[(step + offset)..]);
+        ((0.0719453 * x) - (0.2289914 * y) + (1.4052427 * z)).CopyTo(linear[((2 * step) + offset)..]);
     }
 
     /// <summary>CIE L*a*b* (D50) to gamma-encoded sRGB in [0,1] (unclamped).</summary>
@@ -210,6 +276,9 @@ internal static class ColorSpaces
 
         return linear <= 0.0031308 ? linear * 12.92 : (1.055 * Math.Pow(linear, 1.0 / 2.4)) - 0.055;
     }
+
+    public static void LinearToSrgb(float[] values) =>
+        Parallelism.For(values.Length, 32, (start, end) => LinearToSrgb(values.AsSpan(start, end - start)));
 
     public static void LinearToSrgb(Span<float> values)
     {

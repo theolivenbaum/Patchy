@@ -211,7 +211,7 @@ internal sealed class MaskSampler
         return radii;
     }
 
-    // Edge-clamped running box filter from source into destination.
+    // Edge-clamped running box filter from source into destination; lines are independent and run in parallel.
     private static void BoxPass(float[] source, float[] destination, int width, int height, int radius, bool horizontal)
     {
         var length = horizontal ? width : height;
@@ -219,22 +219,25 @@ internal sealed class MaskSampler
         var step = horizontal ? 1 : width;
         var window = (2 * radius) + 1;
         var inverse = 1f / window;
-        for (var line = 0; line < lines; line++)
+        Parallelism.For(lines, length + (2 * radius), (first, last) =>
         {
-            var baseIndex = horizontal ? line * width : line;
-            float At(int index) => source[baseIndex + (Math.Clamp(index, 0, length - 1) * step)];
-            var sum = 0f;
-            for (var i = -radius; i <= radius; i++)
+            for (var line = first; line < last; line++)
             {
-                sum += At(i);
-            }
+                var baseIndex = horizontal ? line * width : line;
+                float At(int index) => source[baseIndex + (Math.Clamp(index, 0, length - 1) * step)];
+                var sum = 0f;
+                for (var i = -radius; i <= radius; i++)
+                {
+                    sum += At(i);
+                }
 
-            for (var i = 0; i < length; i++)
-            {
-                destination[baseIndex + (i * step)] = sum * inverse;
-                sum += At(i + radius + 1) - At(i - radius);
+                for (var i = 0; i < length; i++)
+                {
+                    destination[baseIndex + (i * step)] = sum * inverse;
+                    sum += At(i + radius + 1) - At(i - radius);
+                }
             }
-        }
+        });
     }
 
     /// <summary>Combines this sampler with another by multiplication over the union of their planes.</summary>

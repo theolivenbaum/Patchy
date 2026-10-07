@@ -1,4 +1,6 @@
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using XRay.Psd.Imaging;
 
@@ -70,50 +72,76 @@ public static class JpegEncoder
             (cr, _, _) = Downsample(cr, width, height);
         }
 
-        // Pass 1: quantize every block in scan order.
+        // Pass 1: quantize every block in scan order. MCU rows are independent and
+        // fill fixed slots, so they run in parallel.
         var blocksPerMcu = subsample ? 6 : 3;
-        var blocks = new short[mcuColumns * mcuRows * blocksPerMcu][];
-        var blockIndex = 0;
-        Span<float> samples = stackalloc float[64];
-        for (var my = 0; my < mcuRows; my++)
+        var blocksPerRow = mcuColumns * blocksPerMcu;
+        var blocks = new short[mcuRows * blocksPerRow][];
+        Parallelism.For(mcuRows, (long)mcuColumns * blocksPerMcu * 64 * 8, (first, last) =>
         {
-            for (var mx = 0; mx < mcuColumns; mx++)
+            Span<float> samples = stackalloc float[64];
+            for (var my = first; my < last; my++)
             {
-                if (subsample)
+                var blockIndex = my * blocksPerRow;
+                for (var mx = 0; mx < mcuColumns; mx++)
                 {
-                    for (var by = 0; by < 2; by++)
+                    if (subsample)
                     {
-                        for (var bx = 0; bx < 2; bx++)
+                        for (var by = 0; by < 2; by++)
                         {
-                            Extract(y, width, height, (mx * 16) + (bx * 8), (my * 16) + (by * 8), samples);
-                            blocks[blockIndex++] = Quantize(samples, luminanceTable);
+                            for (var bx = 0; bx < 2; bx++)
+                            {
+                                Extract(y, width, height, (mx * 16) + (bx * 8), (my * 16) + (by * 8), samples);
+                                blocks[blockIndex++] = Quantize(samples, luminanceTable);
+                            }
                         }
-                    }
 
-                    Extract(cb, chromaWidth, chromaHeight, mx * 8, my * 8, samples);
-                    blocks[blockIndex++] = Quantize(samples, chrominanceTable);
-                    Extract(cr, chromaWidth, chromaHeight, mx * 8, my * 8, samples);
-                    blocks[blockIndex++] = Quantize(samples, chrominanceTable);
-                }
-                else
-                {
-                    Extract(y, width, height, mx * 8, my * 8, samples);
-                    blocks[blockIndex++] = Quantize(samples, luminanceTable);
-                    Extract(cb, width, height, mx * 8, my * 8, samples);
-                    blocks[blockIndex++] = Quantize(samples, chrominanceTable);
-                    Extract(cr, width, height, mx * 8, my * 8, samples);
-                    blocks[blockIndex++] = Quantize(samples, chrominanceTable);
+                        Extract(cb, chromaWidth, chromaHeight, mx * 8, my * 8, samples);
+                        blocks[blockIndex++] = Quantize(samples, chrominanceTable);
+                        Extract(cr, chromaWidth, chromaHeight, mx * 8, my * 8, samples);
+                        blocks[blockIndex++] = Quantize(samples, chrominanceTable);
+                    }
+                    else
+                    {
+                        Extract(y, width, height, mx * 8, my * 8, samples);
+                        blocks[blockIndex++] = Quantize(samples, luminanceTable);
+                        Extract(cb, width, height, mx * 8, my * 8, samples);
+                        blocks[blockIndex++] = Quantize(samples, chrominanceTable);
+                        Extract(cr, width, height, mx * 8, my * 8, samples);
+                        blocks[blockIndex++] = Quantize(samples, chrominanceTable);
+                    }
                 }
             }
-        }
+        });
 
-        // Gather symbol statistics with the same traversal the writer uses.
+        // Gather symbol statistics with the same traversal the writer uses, in parallel
+        // MCU-row strips (integer counts, so the sum does not depend on the split).
+        var stripCount = Parallelism.StripCount(mcuRows, (long)blocksPerRow * 64);
+        var stripCounts = new SymbolCounter[stripCount];
+        Parallelism.For(stripCount, (long)blocks.Length * 64 / stripCount, (first, last) =>
+        {
+            for (var strip = first; strip < last; strip++)
+            {
+                var counter = new SymbolCounter(new long[4 * 257]);
+                var startBlock = (int)((long)mcuRows * strip / stripCount) * blocksPerRow;
+                var endBlock = (int)((long)mcuRows * (strip + 1) / stripCount) * blocksPerRow;
+                Traverse(blocks, blocksPerMcu, startBlock, endBlock, ref counter);
+                stripCounts[strip] = counter;
+            }
+        });
+
         var dcFrequency = new[] { new long[257], new long[257] };
         var acFrequency = new[] { new long[257], new long[257] };
-        Traverse(blocks, blocksPerMcu, (table, symbol, _, _, isDc) =>
+        foreach (var counter in stripCounts)
         {
-            (isDc ? dcFrequency : acFrequency)[table][symbol]++;
-        });
+            for (var symbol = 0; symbol < 257; symbol++)
+            {
+                dcFrequency[0][symbol] += counter.Counts[symbol];
+                dcFrequency[1][symbol] += counter.Counts[257 + symbol];
+                acFrequency[0][symbol] += counter.Counts[514 + symbol];
+                acFrequency[1][symbol] += counter.Counts[771 + symbol];
+            }
+        }
 
         var dcTables = new[] { HuffmanTable.Build(dcFrequency[0]), HuffmanTable.Build(dcFrequency[1]) };
         var acTables = new[] { HuffmanTable.Build(acFrequency[0]), HuffmanTable.Build(acFrequency[1]) };
@@ -121,7 +149,32 @@ public static class JpegEncoder
         using var output = new MemoryStream();
         WriteHeaders(output, width, height, subsample, luminanceTable, chrominanceTable, dcTables, acTables);
         var writer = new BitWriter(output);
-        Traverse(blocks, blocksPerMcu, (table, symbol, extraBits, extraLength, isDc) =>
+        var symbolWriter = new SymbolWriter(writer, dcTables, acTables);
+        Traverse(blocks, blocksPerMcu, 0, blocks.Length, ref symbolWriter);
+        writer.Flush();
+        output.WriteByte(0xFF);
+        output.WriteByte(0xD9);
+        return output.ToArray();
+    }
+
+    /// <summary>Receives the entropy-coding symbols of <see cref="Traverse{TSink}"/>; a struct so the calls inline.</summary>
+    private interface ISymbolSink
+    {
+        void Symbol(int table, int symbol, int extraBits, int extraLength, bool isDc);
+    }
+
+    /// <summary>Counts symbols: DC luma, DC chroma, AC luma, AC chroma, 257 slots each.</summary>
+    private readonly struct SymbolCounter(long[] counts) : ISymbolSink
+    {
+        public long[] Counts { get; } = counts;
+
+        public void Symbol(int table, int symbol, int extraBits, int extraLength, bool isDc) =>
+            Counts[((isDc ? 0 : 2) + table) * 257 + symbol]++;
+    }
+
+    private readonly struct SymbolWriter(BitWriter writer, HuffmanTable[] dcTables, HuffmanTable[] acTables) : ISymbolSink
+    {
+        public void Symbol(int table, int symbol, int extraBits, int extraLength, bool isDc)
         {
             var huffman = isDc ? dcTables[table] : acTables[table];
             writer.Write(huffman.Codes[symbol], huffman.Lengths[symbol]);
@@ -129,19 +182,27 @@ public static class JpegEncoder
             {
                 writer.Write(extraBits, extraLength);
             }
-        });
-        writer.Flush();
-        output.WriteByte(0xFF);
-        output.WriteByte(0xD9);
-        return output.ToArray();
+        }
     }
 
-    private delegate void SymbolSink(int table, int symbol, int extraBits, int extraLength, bool isDc);
-
-    private static void Traverse(short[][] blocks, int blocksPerMcu, SymbolSink sink)
+    /// <summary>
+    /// Walks blocks [<paramref name="startBlock"/>, <paramref name="endBlock"/>), which must
+    /// start on an MCU boundary. The DC predictors start from the last block of each
+    /// component before the range, so any MCU-aligned split yields the same symbols.
+    /// </summary>
+    private static void Traverse<TSink>(short[][] blocks, int blocksPerMcu, int startBlock, int endBlock, ref TSink sink)
+        where TSink : struct, ISymbolSink
     {
         var previousDc = new int[3];
-        for (var i = 0; i < blocks.Length; i++)
+        if (startBlock >= blocksPerMcu)
+        {
+            var previous = startBlock - blocksPerMcu;
+            previousDc[0] = blocks[previous + (blocksPerMcu == 6 ? 3 : 0)][0];
+            previousDc[1] = blocks[previous + blocksPerMcu - 2][0];
+            previousDc[2] = blocks[previous + blocksPerMcu - 1][0];
+        }
+
+        for (var i = startBlock; i < endBlock; i++)
         {
             var position = i % blocksPerMcu;
             int component = blocksPerMcu == 6 ? (position < 4 ? 0 : position - 3) : position;
@@ -151,7 +212,7 @@ public static class JpegEncoder
             var diff = block[0] - previousDc[component];
             previousDc[component] = block[0];
             var (dcBits, dcLength) = Magnitude(diff);
-            sink(table, dcLength, dcBits, dcLength, true);
+            sink.Symbol(table, dcLength, dcBits, dcLength, true);
 
             var run = 0;
             for (var k = 1; k < 64; k++)
@@ -165,18 +226,18 @@ public static class JpegEncoder
 
                 while (run > 15)
                 {
-                    sink(table, 0xF0, 0, 0, false);
+                    sink.Symbol(table, 0xF0, 0, 0, false);
                     run -= 16;
                 }
 
                 var (bits, length) = Magnitude(value);
-                sink(table, (run << 4) | length, bits, length, false);
+                sink.Symbol(table, (run << 4) | length, bits, length, false);
                 run = 0;
             }
 
             if (run > 0)
             {
-                sink(table, 0x00, 0, 0, false);
+                sink.Symbol(table, 0x00, 0, 0, false);
             }
         }
     }
@@ -215,7 +276,33 @@ public static class JpegEncoder
         var cb = new float[count];
         var cr = new float[count];
         var pixels = image.Pixels;
-        for (int i = 0, p = 0; i < count; i++, p += 4)
+        Parallelism.For(count, 8, (start, end) => ToYCbCr(pixels, y, cb, cr, start, end));
+        return (y, cb, cr);
+    }
+
+    // Pixels [start, end). The vector lanes evaluate the scalar expressions in the same
+    // order (no fused multiply-add), so both paths produce identical floats.
+    private static void ToYCbCr(byte[] pixels, float[] y, float[] cb, float[] cr, int start, int end)
+    {
+        var i = start;
+        if (Vector.IsHardwareAccelerated && BitConverter.IsLittleEndian)
+        {
+            var words = MemoryMarshal.Cast<byte, uint>(pixels.AsSpan());
+            var mask = new Vector<uint>(0xFF);
+            var offset = new Vector<float>(128f);
+            for (; i <= end - Vector<uint>.Count; i += Vector<uint>.Count)
+            {
+                var packed = new Vector<uint>(words[i..]);
+                var r = Vector.ConvertToSingle(Vector.AsVectorInt32(packed & mask));
+                var g = Vector.ConvertToSingle(Vector.AsVectorInt32(Vector.ShiftRightLogical(packed, 8) & mask));
+                var b = Vector.ConvertToSingle(Vector.AsVectorInt32(Vector.ShiftRightLogical(packed, 16) & mask));
+                ((0.299f * r) + (0.587f * g) + (0.114f * b) - offset).CopyTo(y, i);
+                ((-0.168736f * r) - (0.331264f * g) + (0.5f * b)).CopyTo(cb, i);
+                ((0.5f * r) - (0.418688f * g) - (0.081312f * b)).CopyTo(cr, i);
+            }
+        }
+
+        for (var p = i * 4; i < end; i++, p += 4)
         {
             float r = pixels[p];
             float g = pixels[p + 1];
@@ -224,8 +311,6 @@ public static class JpegEncoder
             cb[i] = (-0.168736f * r) - (0.331264f * g) + (0.5f * b);
             cr[i] = (0.5f * r) - (0.418688f * g) - (0.081312f * b);
         }
-
-        return (y, cb, cr);
     }
 
     private static (float[] Plane, int Width, int Height) Downsample(float[] plane, int width, int height)
@@ -233,17 +318,20 @@ public static class JpegEncoder
         var w = (width + 1) / 2;
         var h = (height + 1) / 2;
         var result = new float[w * h];
-        for (var y = 0; y < h; y++)
+        Parallelism.For(h, w * 4L, (first, last) =>
         {
-            var y0 = y * 2;
-            var y1 = Math.Min(y0 + 1, height - 1);
-            for (var x = 0; x < w; x++)
+            for (var y = first; y < last; y++)
             {
-                var x0 = x * 2;
-                var x1 = Math.Min(x0 + 1, width - 1);
-                result[(y * w) + x] = 0.25f * (plane[(y0 * width) + x0] + plane[(y0 * width) + x1] + plane[(y1 * width) + x0] + plane[(y1 * width) + x1]);
+                var y0 = y * 2;
+                var y1 = Math.Min(y0 + 1, height - 1);
+                for (var x = 0; x < w; x++)
+                {
+                    var x0 = x * 2;
+                    var x1 = Math.Min(x0 + 1, width - 1);
+                    result[(y * w) + x] = 0.25f * (plane[(y0 * width) + x0] + plane[(y0 * width) + x1] + plane[(y1 * width) + x0] + plane[(y1 * width) + x1]);
+                }
             }
-        }
+        });
 
         return (result, w, h);
     }
