@@ -623,6 +623,142 @@ public sealed class ColorManagementTests
         Assert.Equal([100, 100, 100, 255], PsdDocument.Load(mixed.Build()).Patterns["tile"].Rgba);
     }
 
+    private static readonly short[] LinearCurve = [0, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950, 1000];
+
+    /// <summary>
+    /// Duotone color mode data: version 1, ink count, four 10-byte colors, four
+    /// 64-byte Pascal names, four 28-byte transfer functions, dot gain, eleven overprint colors.
+    /// </summary>
+    private static byte[] DuotoneSpec(params (ushort Space, short[] Components, short[] Curve)[] inks)
+    {
+        var writer = new PsdBuilder.Writer();
+        writer.U16(1);
+        writer.U16((ushort)inks.Length);
+        for (var i = 0; i < 4; i++)
+        {
+            var (space, components) = i < inks.Length ? (inks[i].Space, inks[i].Components) : ((ushort)0, new short[4]);
+            writer.U16(space);
+            foreach (var component in components)
+            {
+                writer.I16(component);
+            }
+        }
+
+        for (var i = 0; i < 4; i++)
+        {
+            var name = new byte[64];
+            name[0] = 3;
+            "Ink"u8.CopyTo(name.AsSpan(1));
+            writer.Bytes(name);
+        }
+
+        for (var i = 0; i < 4; i++)
+        {
+            foreach (var point in i < inks.Length ? inks[i].Curve : LinearCurve)
+            {
+                writer.I16(point);
+            }
+
+            writer.U16(0);
+        }
+
+        writer.U16(20);
+        writer.Zeros(11 * 10);
+        return writer.ToArray();
+    }
+
+    private static readonly (ushort, short[]) BlackInk = (0, [0, 0, 0, 0]);
+
+    private static readonly (ushort, short[]) RedInk = (0, [-1, 0, 0, 0]); // 65535, 0, 0 as RGB
+
+    private static RgbaImage RenderDuotone(byte[] spec, byte[] gray, int depth = 8, byte[]? profile = null)
+    {
+        var builder = new PsdBuilder { Width = gray.Length, Height = 1, Mode = PsdColorMode.Duotone, Depth = depth, ColorModeData = spec };
+        if (profile is not null)
+        {
+            builder.Resources.Add((ImageResourceIds.IccProfile, "", profile));
+        }
+
+        builder.MergedChannels.Add(depth == 8 ? gray : PsdBuilder.Plane16(gray.Length, 1, (x, _) => (ushort)(gray[x] * 257)));
+        return PsdDocument.Load(builder.Build()).Render();
+    }
+
+    [Fact]
+    public void Monotone_black_duotone_renders_like_grayscale()
+    {
+        byte[] gray = [0, 32, 128, 200, 255];
+        var spec = DuotoneSpec((BlackInk.Item1, BlackInk.Item2, LinearCurve));
+
+        var plain = RenderDuotone(spec, gray);
+        var profiled = RenderDuotone(spec, gray, profile: TestProfiles.GrayGamma22());
+        for (var x = 0; x < gray.Length; x++)
+        {
+            Assert.Equal(new PsdColor(gray[x], gray[x], gray[x]), plain.GetPixel(x, 0));
+        }
+
+        // Through the document's gray profile the ink reflectance follows Gray Gamma 2.2 (32 -> 26, 128 -> 129).
+        Assert.Equal(new PsdColor(26, 26, 26), profiled.GetPixel(1, 0));
+        Assert.Equal(new PsdColor(129, 129, 129), profiled.GetPixel(2, 0));
+    }
+
+    [Theory]
+    [InlineData(8)]
+    [InlineData(16)]
+    public void Duotone_inks_multiply_in_linear_light(int depth)
+    {
+        var spec = DuotoneSpec((BlackInk.Item1, BlackInk.Item2, LinearCurve), (RedInk.Item1, RedInk.Item2, LinearCurve));
+
+        var image = RenderDuotone(spec, [0, 128, 255], depth);
+
+        // Tone 0.498 on both inks: black leaves 21.6% linear light, red removes it from green and blue only.
+        Assert.Equal(new PsdColor(0, 0, 0), image.GetPixel(0, 0));
+        AssertNear(image.GetPixel(1, 0), 128, 61, 61);
+        Assert.Equal(new PsdColor(255, 255, 255), image.GetPixel(2, 0));
+    }
+
+    [Fact]
+    public void Duotone_curves_and_lab_inks_shape_the_result()
+    {
+        // A curve that puts 30% black ink at the 50% tone.
+        short[] light = [0, -1, -1, -1, -1, -1, 300, -1, -1, -1, -1, -1, 1000];
+        Assert.Equal(0.3, Duotone.EvaluateCurve(light, 0.5), 9);
+        Assert.Equal(0.3, Duotone.EvaluateCurve([0, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950, 1000], 0.3), 9);
+        var image = RenderDuotone(DuotoneSpec((BlackInk.Item1, BlackInk.Item2, light)), [127]);
+        // 30% black coverage reflects the luminance of gray 0.7, which encodes back to 0.7 (178.5).
+        Assert.InRange(image.GetPixel(0, 0).R, 177, 179);
+
+        // Lab inks (space 7: L in hundredths, a and b signed hundredths): L 50 neutral at full tone.
+        var lab = RenderDuotone(DuotoneSpec(((ushort)7, [5000, 0, 0, 0], LinearCurve)), [0]);
+        AssertNear(lab.GetPixel(0, 0), 119, 119, 119);
+    }
+
+    [Fact]
+    public void Multichannel_planes_read_as_inverted_cmy_inks()
+    {
+        // As the reference's convert_multichannel_planes_to_rgb: plane bytes are 255 - ink, a missing plane is no ink.
+        var three = new PsdBuilder { Width = 2, Height = 1, Mode = PsdColorMode.Multichannel };
+        three.MergedChannels.Add([0, 255]);
+        three.MergedChannels.Add([255, 128]);
+        three.MergedChannels.Add([255, 0]);
+        var two = new PsdBuilder { Width = 1, Height = 1, Mode = PsdColorMode.Multichannel };
+        two.MergedChannels.Add([40]);
+        two.MergedChannels.Add([80]);
+
+        var image = PsdDocument.Load(three.Build()).Render();
+        Assert.Equal(new PsdColor(0, 255, 255), image.GetPixel(0, 0));
+        Assert.Equal(new PsdColor(255, 128, 0), image.GetPixel(1, 0));
+        Assert.Equal(new PsdColor(40, 80, 255), PsdDocument.Load(two.Build()).Render().GetPixel(0, 0));
+    }
+
+    [Fact]
+    public void Unreadable_duotone_specifications_fall_back_to_gray()
+    {
+        Assert.Equal(new PsdColor(90, 90, 90), RenderDuotone([0, 1, 0, 1], [90]).GetPixel(0, 0));
+        var spec = DuotoneSpec((BlackInk.Item1, BlackInk.Item2, LinearCurve));
+        spec[1] = 9; // ink count out of range
+        Assert.Equal(new PsdColor(90, 90, 90), RenderDuotone(spec, [90]).GetPixel(0, 0));
+    }
+
     [Fact]
     public void Srgb_profiled_fixtures_keep_their_pixels()
     {

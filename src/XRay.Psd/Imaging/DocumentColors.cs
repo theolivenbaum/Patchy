@@ -17,7 +17,14 @@ internal sealed class DocumentColors
 {
     private readonly PsdDocument _document;
 
+    private System.Runtime.CompilerServices.StrongBox<Duotone?>? _duotone;
+
     public DocumentColors(PsdDocument document) => _document = document;
+
+    /// <summary>The parsed duotone specification of a duotone document, or null (parsed on first use).</summary>
+    public Duotone? Duotone => LazyInitializer.EnsureInitialized(
+        ref _duotone,
+        () => new(_document.ColorMode == PsdColorMode.Duotone ? Duotone.Parse(_document.ColorModeData) : null)).Value;
 
     /// <summary>
     /// The document's ICC transform when it converts <paramref name="channels"/>
