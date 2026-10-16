@@ -27,11 +27,13 @@ The reference reads only 1005 and 1032 (`.reference/src/psd/psd_image_resources.
 
 `layer.Style` (`XRay.Psd.Layers.PsdLayerStyle`) is a read-only view of the effects descriptor that `PsdLayer.Effects` already exposes raw. `Effects` lists every effect instance in file order, including disabled ones and every instance of a multi-instance effect (`lmfx`); `ActiveEffects` keeps the ones that render; `Visible` is the master switch.
 
-Each `PsdLayerEffect` has its kind, switch, blend mode, opacity (0 to 1), color, and where they apply size, distance, angle (with "Use Global Light" resolved), spread or choke, stroke position, bevel style, technique, altitude and depth, and the bevel shadow mode, color and opacity. The values come from the compositor's own parser (`Rendering/LayerEffects.cs`), so defaults and clamps match what renders. A disabled effect is parsed as if it were enabled, so it reports the same values Photoshop would apply if switched on. Gradient and pattern fills report `HasGradient` and a null `Color`.
+Each `PsdLayerEffect` has its kind, switch, blend mode, opacity (0 to 1), color, and where they apply size, distance, angle (with "Use Global Light" resolved), spread or choke, stroke position, bevel style, technique, altitude and depth, and the bevel shadow mode, color and opacity. The values come from the compositor's own parser (`Rendering/LayerEffects.cs`), so defaults and clamps match what renders. A disabled effect is parsed as if it were enabled, so it reports the same values Photoshop would apply if switched on. Gradient and pattern fills, and gradient glows, report `HasGradient` and a null `Color`.
+
+Layers with only Photoshop 5 effects (`lrFX`, no `lfx2`, `lfxs` or `lmfx`) get them translated into the same descriptor shape: `IsLegacy` is true, `Descriptor` (and `PsdLayer.Effects`) hold the translation, and the effects list drop and inner shadows, outer and inner glows, bevel and emboss, and color fill with the values the compositor renders. The translation rules are in [rendering.md](rendering.md#photoshop-5-effects-legacyeffectscs). Beside a modern block the `lrFX` mirror is ignored, as Photoshop does.
 
 ## Command line
 
-`psdtool info file.psd --resources` prints the typed resources; `--effects` prints each layer's effects under it.
+`psdtool info file.psd --resources` prints the typed resources; `--effects` prints each layer's effects under it, marking Photoshop 5 styles.
 
 ## Packages
 

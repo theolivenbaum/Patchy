@@ -62,6 +62,37 @@ public sealed class EffectCorpusTests
         Assert.True(diff.MeanDelta < 0.5, $"layers vs merged {diff}");
     }
 
+    [Theory]
+    [InlineData(2, false, 255, 255, 255, 255)] // deep: through to the Background layer
+    [InlineData(1, false, 255, 255, 255, 255)] // shallow at the root: the same
+    [InlineData(2, true, 0, 0, 0, 0)] // no Background layer: through to transparency
+    [InlineData(0, false, 255, 0, 0, 255)] // no knockout: Fill 0 shows nothing
+    public void Fill_zero_knockout_layer_punches_through_the_stack(byte knockout, bool transparentDocument, byte r, byte g, byte b, byte a)
+    {
+        // White bottom layer, opaque red, then a blue square with Fill 0 and knockout.
+        var builder = new PsdBuilder { Width = 8, Height = 8, MergedTransparency = transparentDocument };
+        builder.Layers.Add(Solid("Background", new PsdRect(0, 0, 8, 8), 255, 255, 255));
+        builder.Layers.Add(Solid("red", new PsdRect(0, 0, 8, 8), 255, 0, 0));
+        var hole = Solid("hole", new PsdRect(2, 2, 6, 6), 0, 0, 255);
+        hole.Blocks.Add(("iOpa", [0, 0, 0, 0]));
+        hole.Blocks.Add(("knko", [knockout, 0, 0, 0]));
+        builder.Layers.Add(hole);
+        var image = PsdDocument.Load(builder.Build()).Render(new RenderOptions { Source = RenderSource.Layers });
+
+        Assert.Equal(new PsdColor(r, g, b, a), image.GetPixel(4, 4));
+        Assert.Equal(new PsdColor(255, 0, 0), image.GetPixel(0, 0));
+    }
+
+    private static BuilderLayer Solid(string name, PsdRect rect, byte r, byte g, byte b)
+    {
+        var layer = new BuilderLayer { Name = name, Rect = rect };
+        layer.Channels[-1] = PsdBuilder.Plane8(rect.Width, rect.Height, 255);
+        layer.Channels[0] = PsdBuilder.Plane8(rect.Width, rect.Height, r);
+        layer.Channels[1] = PsdBuilder.Plane8(rect.Width, rect.Height, g);
+        layer.Channels[2] = PsdBuilder.Plane8(rect.Width, rect.Height, b);
+        return layer;
+    }
+
     [Fact]
     public void Gradient_glow_with_a_custom_contour_matches_photoshop()
     {

@@ -24,7 +24,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/XRay.Psd/Descriptors/` | Action Manager descriptor reader (`Objc`, `VlLs`, `UntF`, `tdta`, `obj `...) |
 | `src/XRay.Psd/Text/` | `EngineData` parser, `TextLayerInfo` (TySh), `TextEngineBlock` (`Txt2`) and `TextEngineResolver`, `LegacyText` (PS 5 tySh), `TextExtractor`; see `docs/text.md` |
 | `src/XRay.Psd/Imaging/` | `RgbaImage` (public output), `PlanarImage` (internal float planes), `ColorSpaces`, `DocumentColors` (descriptor, text and pattern colors through the pixel transform), `Duotone`; `Icc/` holds the ICC parser and profile-to-sRGB transforms |
-| `src/XRay.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Bevel.cs`, `.Strokes.cs`, `.Blending.cs`), SIMD `BlendKernels`/`BlendOps`, `BlendIf`, `SpecialFill`, `MaskSampler`, `PathRasterizer`, `VectorStroker`, `EffectMasks`, `LayerEffects`, `Gradient`, `GradientNoise`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
+| `src/XRay.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Bevel.cs`, `.Strokes.cs`, `.Blending.cs`, `.Knockout.cs`, `.Contours.cs`), SIMD `BlendKernels`/`BlendOps`, `BlendIf`, `SpecialFill`, `MaskSampler`, `PathRasterizer`, `VectorStroker`, `EffectMasks`, `LayerEffects`, `LegacyEffects` (Photoshop 5 `lrFX`), `Gradient`, `GradientNoise`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
 | `src/XRay.Psd/Codecs/` | Built-in `PngEncoder` and baseline `JpegEncoder` |
 | `src/XRay.Psd.Skia/` | Optional SkiaSharp interop (SKBitmap/SKImage, Skia encoders such as WebP) |
 | `src/XRay.Psd.Text/` | Optional type-layer re-rendering (SkiaSharp + HarfBuzz): `IFontResolver` (`FontCollection`, `SystemFontResolver`, aliases), `TextLayoutEngine`, `TextWarpMesh`, `TextLayerRenderer`, `TextLayerRasterizer`; see `docs/text-rendering.md` |
@@ -80,6 +80,6 @@ The survey writes `test-output/survey.txt` (layer compositor vs merged image vs 
 
 ## Rendering model (summary)
 
-`PsdDocument.Render()` defaults to `RenderSource.Auto`: the saved merged image when the version-info resource (1057) says it is real, else the layer compositor. The compositor works on straight-alpha float planes and follows the calibrated reference semantics for groups, clipping, masks, fills, adjustments and layer effects. The full model, effect order and calibration status are in [docs/rendering.md](docs/rendering.md); read it before touching `src/XRay.Psd/Rendering/`.
+`PsdDocument.Render()` defaults to `RenderSource.Auto`: the saved merged image when the version-info resource (1057) says it is real, else the layer compositor. The compositor works on straight-alpha float planes and follows the calibrated reference semantics for groups, clipping, masks, fills, adjustments and layer effects; knockout, shadow and glow contours and gradient glows go beyond the reference, calibrated on psd-tools merged images. The full model, effect order and calibration status are in [docs/rendering.md](docs/rendering.md); read it before touching `src/XRay.Psd/Rendering/`.
 
 Accuracy status per fixture is in the survey output; `RenderingTests` pins the fixtures that already match Photoshop.
