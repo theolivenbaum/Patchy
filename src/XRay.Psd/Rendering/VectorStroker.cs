@@ -662,13 +662,23 @@ internal static class VectorStroker
         }
 
         order.Sort((a, b) => Math.Min(edges[a].From.Y, edges[a].To.Y).CompareTo(Math.Min(edges[b].From.Y, edges[b].To.Y)));
+
+        // Bands of scanlines run in parallel. A band's first row activates every edge that
+        // starts above its bottom and drops those that end above its top, which is the
+        // list (in the same order) a walk from row 0 holds there.
+        Parallelism.For(height, (long)width * SampleRows, (first, last) => RasterizeUnionRows(edges, order, coverage, width, first, last));
+        return coverage;
+    }
+
+    private static void RasterizeUnionRows(List<Edge> edges, List<int> order, float[] coverage, int width, int first, int last)
+    {
         var active = new List<int>();
         var crossings = new List<(double X, int Direction)>();
         var accumulation = new float[width + 1];
         var next = 0;
         var samples = SampleRows;
         var weight = 1f / samples;
-        for (var y = 0; y < height; y++)
+        for (var y = first; y < last; y++)
         {
             var rowTop = (long)y * Sub;
             var rowBottom = rowTop + Sub;
@@ -751,7 +761,5 @@ internal static class VectorStroker
                 row[x] = Math.Clamp(row[x] + running, 0f, 1f);
             }
         }
-
-        return coverage;
     }
 }

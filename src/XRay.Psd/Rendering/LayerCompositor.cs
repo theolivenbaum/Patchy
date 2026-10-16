@@ -199,16 +199,7 @@ internal sealed partial class LayerCompositor
         CompositeList(target, group.Children, Chain(masks, groupMask));
         if (before is not null)
         {
-            for (var y = fadeRegion.Top; y < fadeRegion.Bottom; y++)
-            {
-                var t = target.RowOffset(y, fadeRegion.Left);
-                var b = before.RowOffset(y, fadeRegion.Left);
-                var w = fadeRegion.Width;
-                BlendKernels.FadeTowardRow(
-                    before.R.AsSpan(b, w), before.G.AsSpan(b, w), before.B.AsSpan(b, w), before.A.AsSpan(b, w),
-                    target.R.AsSpan(t, w), target.G.AsSpan(t, w), target.B.AsSpan(t, w), target.A.AsSpan(t, w),
-                    opacity);
-            }
+            FadeToward(target, before, fadeRegion, opacity);
         }
     }
 
@@ -504,19 +495,22 @@ internal sealed partial class LayerCompositor
         var shape = layer.VectorMask is { Subpaths.Count: > 0 } path ? path.Bounds.Intersect(_canvas) : _canvas;
         var placement = gradient.AlignWithLayer && !shape.IsEmpty ? shape : _canvas;
         var pixels = new PlanarImage(_canvas);
-        for (var y = _canvas.Top; y < _canvas.Bottom; y++)
+        Parallelism.For(_canvas.Height, _canvas.Width * 4L, (start, end) =>
         {
-            for (var x = _canvas.Left; x < _canvas.Right; x++)
+            for (var y = _canvas.Top + start; y < _canvas.Top + end; y++)
             {
-                var position = gradient.Position(placement, x, y, GradientSpan.CenterChord);
-                var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
-                var i = pixels.RowOffset(y, x);
-                pixels.R[i] = r;
-                pixels.G[i] = g;
-                pixels.B[i] = b;
-                pixels.A[i] = gradient.Opacity(position, endpointSmoothing: true);
+                for (var x = _canvas.Left; x < _canvas.Right; x++)
+                {
+                    var position = gradient.Position(placement, x, y, GradientSpan.CenterChord);
+                    var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
+                    var i = pixels.RowOffset(y, x);
+                    pixels.R[i] = r;
+                    pixels.G[i] = g;
+                    pixels.B[i] = b;
+                    pixels.A[i] = gradient.Opacity(position, endpointSmoothing: true);
+                }
             }
-        }
+        });
 
         return pixels;
     }
@@ -531,14 +525,17 @@ internal sealed partial class LayerCompositor
 
         var sampler = new PatternSampler(tile, placement, layer);
         var pixels = new PlanarImage(_canvas);
-        for (var y = _canvas.Top; y < _canvas.Bottom; y++)
+        Parallelism.For(_canvas.Height, _canvas.Width * 4L, (start, end) =>
         {
-            for (var x = _canvas.Left; x < _canvas.Right; x++)
+            for (var y = _canvas.Top + start; y < _canvas.Top + end; y++)
             {
-                var i = pixels.RowOffset(y, x);
-                (pixels.R[i], pixels.G[i], pixels.B[i], pixels.A[i]) = sampler.Sample(x, y);
+                for (var x = _canvas.Left; x < _canvas.Right; x++)
+                {
+                    var i = pixels.RowOffset(y, x);
+                    (pixels.R[i], pixels.G[i], pixels.B[i], pixels.A[i]) = sampler.Sample(x, y);
+                }
             }
-        }
+        });
 
         return pixels;
     }
@@ -614,15 +611,18 @@ internal sealed partial class LayerCompositor
     {
         var copy = new PlanarImage(region);
         var width = region.Width;
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, width, (start, end) =>
         {
-            var s = source.RowOffset(y, region.Left);
-            var d = copy.RowOffset(y, region.Left);
-            source.R.AsSpan(s, width).CopyTo(copy.R.AsSpan(d, width));
-            source.G.AsSpan(s, width).CopyTo(copy.G.AsSpan(d, width));
-            source.B.AsSpan(s, width).CopyTo(copy.B.AsSpan(d, width));
-            source.A.AsSpan(s, width).CopyTo(copy.A.AsSpan(d, width));
-        }
+            for (var y = region.Top + start; y < region.Top + end; y++)
+            {
+                var s = source.RowOffset(y, region.Left);
+                var d = copy.RowOffset(y, region.Left);
+                source.R.AsSpan(s, width).CopyTo(copy.R.AsSpan(d, width));
+                source.G.AsSpan(s, width).CopyTo(copy.G.AsSpan(d, width));
+                source.B.AsSpan(s, width).CopyTo(copy.B.AsSpan(d, width));
+                source.A.AsSpan(s, width).CopyTo(copy.A.AsSpan(d, width));
+            }
+        });
 
         return copy;
     }

@@ -182,35 +182,45 @@ internal sealed partial class LayerCompositor
     /// </summary>
     private static float[] MatteOf(PlanarImage image, PsdRect domain, MaskSampler? layerMask, bool fullAlpha, out bool raised)
     {
-        raised = false;
         var matte = new float[domain.Width * domain.Height];
         var inner = image.Bounds.Intersect(domain);
-        var row = new float[Math.Max(1, inner.Width)];
-        for (var y = inner.Top; y < inner.Bottom; y++)
+        var anyRaised = 0;
+        Parallelism.For(inner.Height, inner.Width, (start, end) =>
         {
-            var alpha = image.A.AsSpan(image.RowOffset(y, inner.Left), inner.Width);
-            var span = row.AsSpan(0, inner.Width);
-            if (fullAlpha)
+            var stripRaised = false;
+            var row = new float[Math.Max(1, inner.Width)];
+            for (var y = inner.Top + start; y < inner.Top + end; y++)
             {
-                span.Fill(1f);
-            }
-            else
-            {
-                alpha.CopyTo(span);
-            }
-
-            layerMask?.MultiplyRow(y, inner.Left, span);
-            if (fullAlpha && !raised)
-            {
-                for (var i = 0; i < span.Length && !raised; i++)
+                var alpha = image.A.AsSpan(image.RowOffset(y, inner.Left), inner.Width);
+                var span = row.AsSpan(0, inner.Width);
+                if (fullAlpha)
                 {
-                    raised = alpha[i] < 1f && span[i] > 0f;
+                    span.Fill(1f);
                 }
+                else
+                {
+                    alpha.CopyTo(span);
+                }
+
+                layerMask?.MultiplyRow(y, inner.Left, span);
+                if (fullAlpha && !stripRaised)
+                {
+                    for (var i = 0; i < span.Length && !stripRaised; i++)
+                    {
+                        stripRaised = alpha[i] < 1f && span[i] > 0f;
+                    }
+                }
+
+                span.CopyTo(matte.AsSpan(((y - domain.Top) * domain.Width) + (inner.Left - domain.Left)));
             }
 
-            span.CopyTo(matte.AsSpan(((y - domain.Top) * domain.Width) + (inner.Left - domain.Left)));
-        }
+            if (stripRaised)
+            {
+                Volatile.Write(ref anyRaised, 1);
+            }
+        });
 
+        raised = anyRaised != 0;
         return matte;
     }
 
@@ -354,23 +364,50 @@ internal sealed partial class LayerCompositor
             var bandIn = stroke.Position switch { StrokePosition.Outside => 0f, StrokePosition.Center => stroke.Size * 0.5f, _ => stroke.Size };
             var under = new float[styled.Matte.Length];
             var over = new float[styled.Matte.Length];
-            var any = false;
-            for (var i = 0; i < styled.Matte.Length; i++)
+
+            // Rows run in parallel. The knockout plane is allocated up front for a stroke
+            // without Overprint and dropped again when no pixel of it was written.
+            var fresh = knockout is null && !stroke.Overprint;
+            var strokeKnockout = fresh ? Enumerable.Repeat(1f, styled.Matte.Length).ToArray() : knockout;
+            var anyPaint = 0;
+            var anyKnockout = 0;
+            Parallelism.For(height, width, (start, end) =>
             {
-                var a = Math.Clamp(styled.Matte[i], 0f, 1f);
-                var outBand = bandOut > 0 && outside is not null ? Math.Clamp(bandOut + 1f - outside[i], 0f, 1f) : 0f;
-                var inBand = bandIn > 0 && inside is not null ? Math.Clamp(bandIn + 1f - inside[i], 0f, 1f) : 0f;
-                var innerShare = a * inBand;
-                under[i] = outBand * (1f - innerShare);
-                over[i] = innerShare;
-                any |= under[i] > 0 || over[i] > 0;
-                if (!stroke.Overprint && innerShare > 0)
+                var stripAny = false;
+                var knocked = false;
+                for (var i = start * width; i < end * width; i++)
                 {
-                    knockout ??= Enumerable.Repeat(1f, styled.Matte.Length).ToArray();
-                    knockout[i] *= 1f - innerShare;
+                    var a = Math.Clamp(styled.Matte[i], 0f, 1f);
+                    var outBand = bandOut > 0 && outside is not null ? Math.Clamp(bandOut + 1f - outside[i], 0f, 1f) : 0f;
+                    var inBand = bandIn > 0 && inside is not null ? Math.Clamp(bandIn + 1f - inside[i], 0f, 1f) : 0f;
+                    var innerShare = a * inBand;
+                    under[i] = outBand * (1f - innerShare);
+                    over[i] = innerShare;
+                    stripAny |= under[i] > 0 || over[i] > 0;
+                    if (!stroke.Overprint && innerShare > 0)
+                    {
+                        strokeKnockout![i] *= 1f - innerShare;
+                        knocked = true;
+                    }
                 }
+
+                if (stripAny)
+                {
+                    Volatile.Write(ref anyPaint, 1);
+                }
+
+                if (knocked)
+                {
+                    Volatile.Write(ref anyKnockout, 1);
+                }
+            });
+
+            if (!fresh || anyKnockout != 0)
+            {
+                knockout = strokeKnockout;
             }
 
+            var any = anyPaint != 0;
             if (!any)
             {
                 continue;
@@ -403,35 +440,39 @@ internal sealed partial class LayerCompositor
     {
         var domain = styled.Domain;
         var matte = styled.StrokeEmbossMatte!;
-        var maskRow = styled.Effects.MaskHidesEffects && styled.LayerMask is not null ? new float[domain.Width] : null;
-        for (var y = 0; y < domain.Height; y++)
+        var masked = styled.Effects.MaskHidesEffects && styled.LayerMask is not null;
+        Parallelism.For(domain.Height, domain.Width, (start, end) =>
         {
-            if (maskRow is not null)
+            var maskRow = masked ? new float[domain.Width] : null;
+            for (var y = start; y < end; y++)
             {
-                maskRow.AsSpan().Fill(1f);
-                styled.LayerMask!.MultiplyRow(domain.Top + y, domain.Left, maskRow);
-            }
-
-            for (var x = 0; x < domain.Width; x++)
-            {
-                var i = (y * domain.Width) + x;
-                var a = Math.Clamp(styled.Matte[i], 0f, 1f);
-                var outBand = bandOut > 0 && outside is not null ? Math.Clamp(bandOut + 1f - outside[i], 0f, 1f) : 0f;
-                var inBand = bandIn > 0 && inside is not null ? Math.Clamp(bandIn + 1f - inside[i], 0f, 1f) : 0f;
-                var alpha = Math.Clamp((a * inBand) + ((1f - a) * outBand), 0f, 1f) * stroke.Opacity;
-                if (alpha > 0 && paint is not null)
+                if (maskRow is not null)
                 {
-                    alpha *= paint(domain.Left + x, domain.Top + y).A;
+                    maskRow.AsSpan().Fill(1f);
+                    styled.LayerMask!.MultiplyRow(domain.Top + y, domain.Left, maskRow);
                 }
 
-                if (alpha > 0 && maskRow is not null)
+                for (var x = 0; x < domain.Width; x++)
                 {
-                    alpha *= maskRow[x];
-                }
+                    var i = (y * domain.Width) + x;
+                    var a = Math.Clamp(styled.Matte[i], 0f, 1f);
+                    var outBand = bandOut > 0 && outside is not null ? Math.Clamp(bandOut + 1f - outside[i], 0f, 1f) : 0f;
+                    var inBand = bandIn > 0 && inside is not null ? Math.Clamp(bandIn + 1f - inside[i], 0f, 1f) : 0f;
+                    var alpha = Math.Clamp((a * inBand) + ((1f - a) * outBand), 0f, 1f) * stroke.Opacity;
+                    if (alpha > 0 && paint is not null)
+                    {
+                        alpha *= paint(domain.Left + x, domain.Top + y).A;
+                    }
 
-                matte[i] = alpha + (matte[i] * (1f - alpha));
+                    if (alpha > 0 && maskRow is not null)
+                    {
+                        alpha *= maskRow[x];
+                    }
+
+                    matte[i] = alpha + (matte[i] * (1f - alpha));
+                }
             }
-        }
+        });
     }
 
     /// <summary>The layer's own pixels with overlays and satin folded in, stroke underlays first.</summary>
@@ -478,75 +519,78 @@ internal sealed partial class LayerCompositor
 
         var gradientBounds = MatteBounds(styled);
         var width = region.Width;
-        var alpha = new float[width];
-        var r = new float[width];
-        var g = new float[width];
-        var b = new float[width];
-        var er = new float[width];
-        var eg = new float[width];
-        var eb = new float[width];
-        var ea = new float[width];
         var ones = Enumerable.Repeat(1f, width).ToArray();
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, width * (1L + overlays.Count + satinPlanes.Count), (start, end) =>
         {
-            var s = source.RowOffset(y, region.Left);
-            source.R.AsSpan(s, width).CopyTo(r);
-            source.G.AsSpan(s, width).CopyTo(g);
-            source.B.AsSpan(s, width).CopyTo(b);
-
-            // Interior overlays fold into the layer's straight color: gradient under color, then satin.
-            for (var o = 0; o < overlays.Count; o++)
+            var alpha = new float[width];
+            var r = new float[width];
+            var g = new float[width];
+            var b = new float[width];
+            var er = new float[width];
+            var eg = new float[width];
+            var eb = new float[width];
+            var ea = new float[width];
+            for (var y = region.Top + start; y < region.Top + end; y++)
             {
-                var overlay = overlays[o];
-                var paint = overlayPaints[o];
-                for (var i = 0; i < width; i++)
+                var s = source.RowOffset(y, region.Left);
+                source.R.AsSpan(s, width).CopyTo(r);
+                source.G.AsSpan(s, width).CopyTo(g);
+                source.B.AsSpan(s, width).CopyTo(b);
+
+                // Interior overlays fold into the layer's straight color: gradient under color, then satin.
+                for (var o = 0; o < overlays.Count; o++)
                 {
-                    if (paint is null)
+                    var overlay = overlays[o];
+                    var paint = overlayPaints[o];
+                    for (var i = 0; i < width; i++)
                     {
-                        er[i] = overlay.Color.R / 255f;
-                        eg[i] = overlay.Color.G / 255f;
-                        eb[i] = overlay.Color.B / 255f;
-                        ea[i] = overlay.Opacity;
+                        if (paint is null)
+                        {
+                            er[i] = overlay.Color.R / 255f;
+                            eg[i] = overlay.Color.G / 255f;
+                            eb[i] = overlay.Color.B / 255f;
+                            ea[i] = overlay.Opacity;
+                        }
+                        else
+                        {
+                            float factor;
+                            (er[i], eg[i], eb[i], factor) = paint(region.Left + i, y);
+                            ea[i] = overlay.Opacity * factor;
+                        }
                     }
-                    else
-                    {
-                        float factor;
-                        (er[i], eg[i], eb[i], factor) = paint(region.Left + i, y);
-                        ea[i] = overlay.Opacity * factor;
-                    }
+
+                    FoldInto(overlay.Mode, er, eg, eb, ea, r, g, b, ones, region.Left, y);
                 }
 
-                FoldInto(overlay.Mode, er, eg, eb, ea, r, g, b, ones, region.Left, y);
-            }
-
-            foreach (var (satin, plane) in satinPlanes)
-            {
-                var row = plane.Row(y, region.Left, width);
-                for (var i = 0; i < width; i++)
+                foreach (var (satin, plane) in satinPlanes)
                 {
-                    er[i] = satin.Color.R / 255f;
-                    eg[i] = satin.Color.G / 255f;
-                    eb[i] = satin.Color.B / 255f;
-                    ea[i] = row[i] * satin.Opacity;
+                    var row = plane.Row(y, region.Left, width);
+                    for (var i = 0; i < width; i++)
+                    {
+                        er[i] = satin.Color.R / 255f;
+                        eg[i] = satin.Color.G / 255f;
+                        eb[i] = satin.Color.B / 255f;
+                        ea[i] = row[i] * satin.Opacity;
+                    }
+
+                    FoldInto(satin.Mode, er, eg, eb, ea, r, g, b, ones, region.Left, y);
                 }
 
-                FoldInto(satin.Mode, er, eg, eb, ea, r, g, b, ones, region.Left, y);
-            }
+                source.A.AsSpan(s, width).CopyTo(alpha);
+                styled.LayerMask?.MultiplyRow(y, region.Left, alpha);
+                for (var chain = masks; chain is not null; chain = chain.Next)
+                {
+                    chain.Sampler.MultiplyRow(y, region.Left, alpha);
+                }
 
-            source.A.AsSpan(s, width).CopyTo(alpha);
-            styled.LayerMask?.MultiplyRow(y, region.Left, alpha);
-            for (var chain = masks; chain is not null; chain = chain.Next)
-            {
-                chain.Sampler.MultiplyRow(y, region.Left, alpha);
-            }
+                if (styled.Knockout is { } knockout)
+                {
+                    BlendKernels.MultiplyInPlace(alpha, knockout.Row(y, region.Left, width));
+                }
 
-            if (styled.Knockout is { } knockout)
-            {
-                BlendKernels.MultiplyInPlace(alpha, knockout.Row(y, region.Left, width));
+                CompositeLayerRow(target, y, region.Left, mode, r, g, b, alpha, styled.Opacity, styled.Fill, gate, gateBackdrop, clipMode);
             }
-
-            CompositeLayerRow(target, y, region.Left, mode, r, g, b, alpha, styled.Opacity, styled.Fill, gate, gateBackdrop, clipMode);
-        }
+        });
 
         if (!foldSatin || split is not null)
         {
@@ -573,30 +617,33 @@ internal sealed partial class LayerCompositor
         }
 
         var width = region.Width;
-        var alpha = new float[width];
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, width, (start, end) =>
         {
-            var s = stroke.RowOffset(y, region.Left);
-            var row = stroke.A.AsSpan(s, width);
-            if (row.IndexOfAnyExcept(0f) < 0)
+            var alpha = new float[width];
+            for (var y = region.Top + start; y < region.Top + end; y++)
             {
-                continue;
-            }
+                var s = stroke.RowOffset(y, region.Left);
+                var row = stroke.A.AsSpan(s, width);
+                if (row.IndexOfAnyExcept(0f) < 0)
+                {
+                    continue;
+                }
 
-            row.CopyTo(alpha);
-            styled.LayerMask?.MultiplyRow(y, region.Left, alpha);
-            for (var chain = masks; chain is not null; chain = chain.Next)
-            {
-                chain.Sampler.MultiplyRow(y, region.Left, alpha);
-            }
+                row.CopyTo(alpha);
+                styled.LayerMask?.MultiplyRow(y, region.Left, alpha);
+                for (var chain = masks; chain is not null; chain = chain.Next)
+                {
+                    chain.Sampler.MultiplyRow(y, region.Left, alpha);
+                }
 
-            if (styled.Knockout is { } knockout)
-            {
-                BlendKernels.MultiplyInPlace(alpha, knockout.Row(y, region.Left, width));
-            }
+                if (styled.Knockout is { } knockout)
+                {
+                    BlendKernels.MultiplyInPlace(alpha, knockout.Row(y, region.Left, width));
+                }
 
-            CompositeLayerRow(target, y, region.Left, mode, stroke.R.AsSpan(s, width), stroke.G.AsSpan(s, width), stroke.B.AsSpan(s, width), alpha, styled.Opacity, styled.Fill, null, null, clipMode);
-        }
+                CompositeLayerRow(target, y, region.Left, mode, stroke.R.AsSpan(s, width), stroke.G.AsSpan(s, width), stroke.B.AsSpan(s, width), alpha, styled.Opacity, styled.Fill, null, null, clipMode);
+            }
+        });
     }
 
     /// <summary>Folds an effect color into straight color rows (destination treated as opaque), with the burn/dodge alpha fold.</summary>
@@ -663,93 +710,96 @@ internal sealed partial class LayerCompositor
         }
 
         var width = region.Width;
-        var r = new float[width];
-        var g = new float[width];
-        var b = new float[width];
-        var a = new float[width];
-        var chainRow = masks is null ? [] : new float[width];
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, width, (start, end) =>
         {
-            plane.Row(y, region.Left, width).CopyTo(a);
-            var any = false;
-            for (var i = 0; i < width; i++)
+            var r = new float[width];
+            var g = new float[width];
+            var b = new float[width];
+            var a = new float[width];
+            var chainRow = masks is null ? [] : new float[width];
+            for (var y = region.Top + start; y < region.Top + end; y++)
             {
-                var value = a[i] * scale;
-                if (value > 0 && factor is not null)
-                {
-                    value *= factor(region.Left + i, y);
-                }
-
-                a[i] = value;
-                any |= value > 0;
-            }
-
-            if (!any)
-            {
-                continue;
-            }
-
-            if (styled.Effects.MaskHidesEffects)
-            {
-                styled.LayerMask?.MultiplyRow(y, region.Left, a);
-            }
-
-            if (paint is null)
-            {
-                r.AsSpan().Fill(color.R / 255f);
-                g.AsSpan().Fill(color.G / 255f);
-                b.AsSpan().Fill(color.B / 255f);
-            }
-            else
-            {
+                plane.Row(y, region.Left, width).CopyTo(a);
+                var any = false;
                 for (var i = 0; i < width; i++)
                 {
-                    if (a[i] <= 0)
+                    var value = a[i] * scale;
+                    if (value > 0 && factor is not null)
                     {
-                        continue;
+                        value *= factor(region.Left + i, y);
                     }
 
-                    var (pr, pg, pb, pa) = paint(region.Left + i, y);
-                    r[i] = pr;
-                    g[i] = pg;
-                    b[i] = pb;
-                    a[i] *= pa;
+                    a[i] = value;
+                    any |= value > 0;
                 }
-            }
 
-            // The group mask chain scales coverage after the effect color is resolved
-            // (the reference's masked target): the burn/dodge fold and Dissolve read the
-            // effect's own alpha.
-            var coverage = Span<float>.Empty;
-            if (masks is not null)
-            {
-                coverage = chainRow.AsSpan();
-                coverage.Fill(1f);
-                for (var chain = masks; chain is not null; chain = chain.Next)
+                if (!any)
                 {
-                    chain.Sampler.MultiplyRow(y, region.Left, coverage);
+                    continue;
                 }
-            }
 
-            var t = target.RowOffset(y, region.Left);
-            var dr = target.R.AsSpan(t, width);
-            var dg = target.G.AsSpan(t, width);
-            var db = target.B.AsSpan(t, width);
-            var da = target.A.AsSpan(t, width);
-            var clipRow = clipMode ? ClipCoverageRow(target, t, width) : default;
-            PrepareEffectColor(mode, r, g, b, a, da, region.Left, y, out var effectiveMode);
-            if (mode is PsdBlendMode.LinearBurn or PsdBlendMode.ColorBurn or PsdBlendMode.ColorDodge)
-            {
-                SpecialFill.CompositeEffectRow(mode, r, g, b, a, coverage, dr, dg, db, da, clipMode, clipRow);
-            }
+                if (styled.Effects.MaskHidesEffects)
+                {
+                    styled.LayerMask?.MultiplyRow(y, region.Left, a);
+                }
 
-            if (!coverage.IsEmpty)
-            {
-                BlendKernels.MultiplyInPlace(a, coverage);
-            }
+                if (paint is null)
+                {
+                    r.AsSpan().Fill(color.R / 255f);
+                    g.AsSpan().Fill(color.G / 255f);
+                    b.AsSpan().Fill(color.B / 255f);
+                }
+                else
+                {
+                    for (var i = 0; i < width; i++)
+                    {
+                        if (a[i] <= 0)
+                        {
+                            continue;
+                        }
 
-            BlendKernels.CompositeRow(effectiveMode, r, g, b, a, dr, dg, db, da, clipMode, clipRow);
-        }
+                        var (pr, pg, pb, pa) = paint(region.Left + i, y);
+                        r[i] = pr;
+                        g[i] = pg;
+                        b[i] = pb;
+                        a[i] *= pa;
+                    }
+                }
+
+                // The group mask chain scales coverage after the effect color is resolved
+                // (the reference's masked target): the burn/dodge fold and Dissolve read the
+                // effect's own alpha.
+                var coverage = Span<float>.Empty;
+                if (masks is not null)
+                {
+                    coverage = chainRow.AsSpan();
+                    coverage.Fill(1f);
+                    for (var chain = masks; chain is not null; chain = chain.Next)
+                    {
+                        chain.Sampler.MultiplyRow(y, region.Left, coverage);
+                    }
+                }
+
+                var t = target.RowOffset(y, region.Left);
+                var dr = target.R.AsSpan(t, width);
+                var dg = target.G.AsSpan(t, width);
+                var db = target.B.AsSpan(t, width);
+                var da = target.A.AsSpan(t, width);
+                var clipRow = clipMode ? ClipCoverageRow(target, t, width) : default;
+                PrepareEffectColor(mode, r, g, b, a, da, region.Left, y, out var effectiveMode);
+                if (mode is PsdBlendMode.LinearBurn or PsdBlendMode.ColorBurn or PsdBlendMode.ColorDodge)
+                {
+                    SpecialFill.CompositeEffectRow(mode, r, g, b, a, coverage, dr, dg, db, da, clipMode, clipRow);
+                }
+
+                if (!coverage.IsEmpty)
+                {
+                    BlendKernels.MultiplyInPlace(a, coverage);
+                }
+
+                BlendKernels.CompositeRow(effectiveMode, r, g, b, a, dr, dg, db, da, clipMode, clipRow);
+            }
+        });
     }
 
     /// <summary>Per-pixel paint of a gradient or pattern overlay; null for solid colors (and unresolvable patterns paint nothing).</summary>
@@ -982,16 +1032,19 @@ internal sealed partial class LayerCompositor
 
     private static void FadeToward(PlanarImage target, PlanarImage before, PsdRect region, float opacity)
     {
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, region.Width, (start, end) =>
         {
-            var t = target.RowOffset(y, region.Left);
-            var b = before.RowOffset(y, region.Left);
-            var w = region.Width;
-            BlendKernels.FadeTowardRow(
-                before.R.AsSpan(b, w), before.G.AsSpan(b, w), before.B.AsSpan(b, w), before.A.AsSpan(b, w),
-                target.R.AsSpan(t, w), target.G.AsSpan(t, w), target.B.AsSpan(t, w), target.A.AsSpan(t, w),
-                opacity);
-        }
+            for (var y = region.Top + start; y < region.Top + end; y++)
+            {
+                var t = target.RowOffset(y, region.Left);
+                var b = before.RowOffset(y, region.Left);
+                var w = region.Width;
+                BlendKernels.FadeTowardRow(
+                    before.R.AsSpan(b, w), before.G.AsSpan(b, w), before.B.AsSpan(b, w), before.A.AsSpan(b, w),
+                    target.R.AsSpan(t, w), target.G.AsSpan(t, w), target.B.AsSpan(t, w), target.A.AsSpan(t, w),
+                    opacity);
+            }
+        });
     }
 
     /// <summary>
@@ -1009,11 +1062,14 @@ internal sealed partial class LayerCompositor
     private static void ApplyRange(float[] plane, float range, bool center)
     {
         var gain = 100f / Math.Clamp(range, 1f, 100f);
-        for (var i = 0; i < plane.Length; i++)
+        Parallelism.For(plane.Length, 1, (start, end) =>
         {
-            var value = Math.Min(1f, plane[i] * gain);
-            plane[i] = center ? 1f - value : value;
-        }
+            for (var i = start; i < end; i++)
+            {
+                var value = Math.Min(1f, plane[i] * gain);
+                plane[i] = center ? 1f - value : value;
+            }
+        });
     }
 
     /// <summary>Photoshop's light offset: the effect moves away from the light angle.</summary>
@@ -1030,15 +1086,18 @@ internal sealed partial class LayerCompositor
         var width = domain.Width;
         var height = domain.Height;
         var result = new float[styled.Matte.Length];
-        for (var y = 0; y < height; y++)
+        Parallelism.For(height, width, (start, end) =>
         {
-            var sy = y - dy;
-            for (var x = 0; x < width; x++)
+            for (var y = start; y < end; y++)
             {
-                var sx = x - dx;
-                result[(y * width) + x] = (uint)sx < (uint)width && (uint)sy < (uint)height ? styled.Matte[(sy * width) + sx] : 0f;
+                var sy = y - dy;
+                for (var x = 0; x < width; x++)
+                {
+                    var sx = x - dx;
+                    result[(y * width) + x] = (uint)sx < (uint)width && (uint)sy < (uint)height ? styled.Matte[(sy * width) + sx] : 0f;
+                }
             }
-        }
+        });
 
         return result;
     }
@@ -1049,10 +1108,13 @@ internal sealed partial class LayerCompositor
         var (dx, dy) = Offset(satin.AngleDegrees, Math.Max(1f, satin.Distance));
         var forward = Shifted(styled, -dx, -dy);
         var backward = Shifted(styled, dx, dy);
-        for (var i = 0; i < forward.Length; i++)
+        Parallelism.For(forward.Length, 1, (start, end) =>
         {
-            forward[i] -= backward[i];
-        }
+            for (var i = start; i < end; i++)
+            {
+                forward[i] -= backward[i];
+            }
+        });
 
         var size = satin.Size;
         if (size > 0)
@@ -1060,11 +1122,14 @@ internal sealed partial class LayerCompositor
             EffectMasks.TentBlur(forward, styled.Domain.Width, styled.Domain.Height, Math.Max(2, (int)MathF.Round(size, MidpointRounding.AwayFromZero)));
         }
 
-        for (var i = 0; i < forward.Length; i++)
+        Parallelism.For(forward.Length, 1, (start, end) =>
         {
-            var value = Math.Clamp(Math.Abs(forward[i]), 0f, 1f);
-            forward[i] = satin.Invert ? 1f - value : value;
-        }
+            for (var i = start; i < end; i++)
+            {
+                var value = Math.Clamp(Math.Abs(forward[i]), 0f, 1f);
+                forward[i] = satin.Invert ? 1f - value : value;
+            }
+        });
 
         return new Plane(styled.Domain, forward);
     }
@@ -1074,19 +1139,34 @@ internal sealed partial class LayerCompositor
     {
         var domain = styled.Domain;
         int left = int.MaxValue, top = int.MaxValue, right = int.MinValue, bottom = int.MinValue;
-        for (var y = 0; y < domain.Height; y++)
+
+        // Strips find their own extremes; the integer min/max merge is order-free.
+        var gate = new object();
+        Parallelism.For(domain.Height, domain.Width, (start, end) =>
         {
-            for (var x = 0; x < domain.Width; x++)
+            int stripLeft = int.MaxValue, stripTop = int.MaxValue, stripRight = int.MinValue, stripBottom = int.MinValue;
+            for (var y = start; y < end; y++)
             {
-                if (styled.Matte[(y * domain.Width) + x] > 0)
+                for (var x = 0; x < domain.Width; x++)
                 {
-                    left = Math.Min(left, x);
-                    right = Math.Max(right, x);
-                    top = Math.Min(top, y);
-                    bottom = Math.Max(bottom, y);
+                    if (styled.Matte[(y * domain.Width) + x] > 0)
+                    {
+                        stripLeft = Math.Min(stripLeft, x);
+                        stripRight = Math.Max(stripRight, x);
+                        stripTop = Math.Min(stripTop, y);
+                        stripBottom = Math.Max(stripBottom, y);
+                    }
                 }
             }
-        }
+
+            lock (gate)
+            {
+                left = Math.Min(left, stripLeft);
+                right = Math.Max(right, stripRight);
+                top = Math.Min(top, stripTop);
+                bottom = Math.Max(bottom, stripBottom);
+            }
+        });
 
         return left > right ? styled.Source.Bounds : new PsdRect(domain.Left + left, domain.Top + top, domain.Left + right + 1, domain.Top + bottom + 1);
     }
