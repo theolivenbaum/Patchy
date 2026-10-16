@@ -121,9 +121,20 @@ public sealed record PsdSlice
 
     public string CellText { get; init; } = string.Empty;
 
+    /// <summary>Cell text alignment: 0 default, 1 left, 2 center, 3 right.</summary>
     public int HorizontalAlignment { get; init; }
 
+    /// <summary>Cell text alignment: 0 default, 1 top, 2 middle, 3 bottom, 4 baseline.</summary>
     public int VerticalAlignment { get; init; }
+
+    /// <summary>Outsets in pixels (version 7 and 8 descriptors only; 0 otherwise).</summary>
+    public int TopOutset { get; init; }
+
+    public int LeftOutset { get; init; }
+
+    public int BottomOutset { get; init; }
+
+    public int RightOutset { get; init; }
 
     /// <summary>Background color with its alpha (0 for none).</summary>
     public PsdColor BackgroundColor { get; init; } = PsdColor.Transparent;
@@ -132,7 +143,8 @@ public sealed record PsdSlice
 /// <summary>
 /// The slices resource (1050): the slice group bounds and name, and every slice.
 /// <c>Version</c> is 6 for the binary layout, 7 or 8 for the descriptor layout,
-/// whose raw descriptor is kept in <c>Descriptor</c>.
+/// whose raw descriptor is kept in <c>Descriptor</c>. In the descriptor layout
+/// <c>GroupName</c> is the <c>baseName</c> (every corpus file stores "User").
 /// </summary>
 public sealed record PsdSlices(int Version, PsdRect Bounds, string GroupName, IReadOnlyList<PsdSlice> Slices, Descriptor? Descriptor);
 

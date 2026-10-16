@@ -80,9 +80,10 @@ internal sealed class LaidOutText
 /// <item>Tracking adds size x tracking / 1000 per inter-glyph gap, not after the last glyph; faux bold adds 0.03 em to every advance.</item>
 /// <item>Horizontal and vertical glyph scales stretch glyphs only; leading stays size based.</item>
 /// <item>Vertical type stacks em cells (whitespace advances by its width), columns advance left by leading.</item>
+/// <item>Type on a path sets one line along the path between its range markers (<c>TextLayout.Path.cs</c>).</item>
 /// </list>
 /// </summary>
-internal sealed class TextLayoutEngine
+internal sealed partial class TextLayoutEngine
 {
     /// <summary>Faux bold widens each glyph and its advance by this fraction of the em (reference <c>kFauxBoldEmFraction</c>).</summary>
     public const double FauxBoldEm = 0.03;
@@ -115,9 +116,19 @@ internal sealed class TextLayoutEngine
             return output;
         }
 
+        if (info.ShapeKind == TextShapeKind.Path && (info.Path is null || info.Orientation == TextOrientation.Vertical))
+        {
+            // Vertical type on a path is not modeled: an empty layout keeps the stored pixels.
+            return output;
+        }
+
         var styleOf = ResolveStyles(info, text, output);
         var paragraphs = SplitParagraphs(info, text);
-        if (info.Orientation == TextOrientation.Vertical)
+        if (info.ShapeKind == TextShapeKind.Path)
+        {
+            new PathPass(this, info, text, styleOf, output).Run(paragraphs);
+        }
+        else if (info.Orientation == TextOrientation.Vertical)
         {
             new VerticalPass(this, info, text, styleOf, output).Run(paragraphs);
         }

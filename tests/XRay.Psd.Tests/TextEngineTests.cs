@@ -95,6 +95,10 @@ public sealed class TextEngineTests
                     Assert.Equal(own.HorizontalScale, other.HorizontalScale);
                     Assert.Equal(own.VerticalScale, other.VerticalScale);
                     Assert.Equal((own.FauxBold, own.FauxItalic), (other.FauxBold, other.FauxItalic));
+
+                    // Keys mapped by the corpus comparison (docs/text.md, "Txt2").
+                    Assert.Equal((own.Caps, own.BaselinePosition, own.Underline, own.Strikethrough), (other.Caps, other.BaselinePosition, other.Underline, other.Strikethrough));
+                    Assert.Equal((own.Ligatures, own.DiscretionaryLigatures, own.NoBreak, own.BaselineDirection), (other.Ligatures, other.DiscretionaryLigatures, other.NoBreak, other.BaselineDirection));
                 }
 
                 Assert.Equal(info.Paragraphs.Select(p => (p.Start, p.Length, p.Justification)), engineObject.Paragraphs.Select(p => (p.Start, p.Length, p.Justification)));
@@ -389,6 +393,70 @@ public sealed class TextEngineTests
         Assert.Equal(12, paragraphs[1].StartIndent);
         Assert.Equal(TextJustification.Right, paragraphs[1].Justification);
         Assert.Equal(["AdobeInvisFont", "ArialMT"], engine.Fonts.Select(f => f.PostScriptName));
+    }
+
+    [Fact]
+    public void Txt2_character_keys_map_caps_positions_decorations_and_no_break()
+    {
+        // Style keys 12 caps, 13 baseline position, 15 strikethrough and 16 underline (position
+        // numbers), 19 discretionary ligatures, 35 baseline direction, 52 no break.
+        var strings = new List<string> { "ArialMT", "abc\r" };
+        const string Template =
+            " /0 << /1 << /0 [ << /0 << /99 /CoolTypeFont /0 << /0 $0 /2 1 >> >> >> ] >> >>" +
+            " /1 << /1 [ << /0 << /0 $1 /6 << /0 [" +
+            " << /0 << /0 << /6 << /0 0 /1 10.0 /12 2 /13 1 /15 1 /16 2 /19 true /35 1 /52 true >> >> >> /1 2 >>" +
+            " << /0 << /0 << /6 << /0 0 /1 10.0 /12 1 /13 2 >> >> >> /1 2 >> ] >> >> >> ] >>";
+
+        var runs = TextEngineBlock.Parse(EngineMany(Template, strings))!.Objects.Single().StyleRuns;
+
+        Assert.Equal((TextCaps.AllCaps, TextBaselinePosition.Superscript, true, true), (runs[0].Caps, runs[0].BaselinePosition, runs[0].Underline, runs[0].Strikethrough));
+        Assert.Equal((true, true, 1), (runs[0].DiscretionaryLigatures, runs[0].NoBreak, runs[0].BaselineDirection));
+        Assert.Equal((TextCaps.SmallCaps, TextBaselinePosition.Subscript, false, false), (runs[1].Caps, runs[1].BaselinePosition, runs[1].Underline, runs[1].Strikethrough));
+        Assert.Equal((false, false, 0), (runs[1].DiscretionaryLigatures, runs[1].NoBreak, runs[1].BaselineDirection));
+    }
+
+    [Fact]
+    public void Type_on_a_path_reads_its_curve_from_the_Txt2_frame()
+    {
+        // ag-psd's text-path.psd (Photoshop): TySh calls the layer box text; the Txt2 frame is a path.
+        var document = PsdDocument.Load(Fixtures.AgPsd("text-path.psd"));
+        var info = document.Layers.Single(l => l.Kind == PsdLayerKind.Text).Text!;
+
+        Assert.Equal(1, info.ShapeType);
+        Assert.Equal(TextShapeKind.Path, info.ShapeKind);
+        Assert.False(info.IsParagraphText);
+        Assert.True(info.Origin.HasFlag(TextDataOrigin.TextEngineBlock));
+        Assert.Equal(TextShapeKind.Path, info.TextEngineObject!.Frame!.ShapeKind);
+        Assert.Same(info.TextEngineObject.Frame.Path, info.Path);
+
+        var path = info.Path!;
+        Assert.Equal(2, path.Segments.Count);
+        Assert.Equal(new TextPoint(0, 10.17448), path.Segments[0].Start);
+        Assert.Equal(new TextPoint(83, 13.17448), path.Segments[0].End);
+        Assert.Equal(path.Segments[0].End, path.Segments[1].Start);
+        Assert.Equal(new TextPoint(150, 3.17448), path.Segments[1].End);
+        Assert.Equal((0, 0.32983, false, false), (path.RangeStart, path.RangeEnd, path.Flipped, path.IsClosed));
+        Assert.Equal(new TextBounds(0, -13.99219, 150, 21.17448), path.Bounds);
+        Assert.Equal(path.Segments[1].End, path.PointAt(2));
+        Assert.Equal(30.199, path.PointAt(0.32983).X, 3);
+
+        // Text extraction is unchanged.
+        Assert.Contains(document.ExtractText().TextLayers, t => t == "some text");
+    }
+
+    [Fact]
+    public void Path_frames_without_whole_segments_have_no_path()
+    {
+        var strings = new List<string> { "abc\r" };
+        const string Template =
+            " /0 << /8 << /0 [ << /0 << /1 << /0 [ 0.0 0.0 1.0 1.0 ] >> /2 << /0 2 >> >> >> ] >> >>" +
+            " /1 << /1 [ << /0 << /0 $0 >> /1 << /0 [ << /0 0 >> ] >> >> ] >>";
+
+        var engine = TextEngineBlock.Parse(EngineMany(Template, strings))!;
+
+        Assert.Equal(TextShapeKind.Path, engine.Frames.Single().ShapeKind);
+        Assert.Null(engine.Frames.Single().Path);
+        Assert.Equal(TextShapeKind.Other, TextEngineResolver.FromObject(engine.Objects.Single(), null).ShapeKind);
     }
 
     [Fact]

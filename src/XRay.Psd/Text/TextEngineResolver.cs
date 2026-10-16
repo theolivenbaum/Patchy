@@ -73,7 +73,8 @@ internal static class TextEngineResolver
             Transform = transform ?? [1, 0, 0, 1, 0, 0],
             Orientation = frame?.Orientation ?? TextOrientation.Horizontal,
             IsParagraphText = frame?.ShapeKind == TextShapeKind.Box,
-            ShapeKind = frame?.ShapeKind ?? TextShapeKind.Point,
+            ShapeKind = frame?.ShapeKind == TextShapeKind.Path && frame.Path is null ? TextShapeKind.Other : frame?.ShapeKind ?? TextShapeKind.Point,
+            Path = frame?.Path,
             StyleRuns = textObject.StyleRuns,
             Paragraphs = textObject.Paragraphs,
             Fonts = textObject.Fonts,
@@ -115,14 +116,17 @@ internal static class TextEngineResolver
             }
         }
 
-        var used = rawText is not null || runs is not null || paragraphs is not null;
+        // Type on a path: TySh records it as box text; only the Txt2 frame has the path.
+        var path = textObject.Frame is { ShapeKind: TextShapeKind.Path, Path: { } framePath } ? framePath : null;
+        var used = rawText is not null || runs is not null || paragraphs is not null || path is not null;
         return info.With(
             rawText: rawText,
             styleRuns: runs,
             paragraphs: paragraphs,
             fonts: fonts,
             textEngineObject: textObject,
-            origin: used ? TextDataOrigin.TextEngineBlock : TextDataOrigin.None);
+            origin: used ? TextDataOrigin.TextEngineBlock : TextDataOrigin.None,
+            path: path);
     }
 
     /// <summary>Takes direction and list settings, which TySh does not store, from the Txt2 paragraph at the same start.</summary>

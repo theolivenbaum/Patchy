@@ -152,6 +152,48 @@ public sealed class ResourceTests
         Assert.Null(PsdDocument.Load(guides.Build()).Resources.GridAndGuides);
     }
 
+    [Fact]
+    public void Version_8_slices_read_urls_alignment_outsets_and_colors()
+    {
+        // The descriptor layout as Photoshop writes it (metadata.psd): the URL key is "url".
+        static DescriptorWriter Rect(int l, int t, int r, int b) =>
+            new DescriptorWriter("Rct1").Add("Top ", t).Add("Left", l).Add("Btom", b).Add("Rght", r);
+        var slice = new DescriptorWriter("slice")
+            .Add("sliceID", 3).Add("groupID", 0)
+            .Add("origin", new DescriptorWriter.EnumValue("ESliceOrigin", "userGenerated"))
+            .Add("Type", new DescriptorWriter.EnumValue("ESliceType", "Img "))
+            .Add("bounds", Rect(1, 2, 30, 40))
+            .Add("Nm  ", "hero")
+            .Add("url", "https://example.com/v8")
+            .Add("null", "_self")
+            .Add("Msge", "status")
+            .Add("altTag", "alt v8")
+            .Add("cellTextIsHTML", false)
+            .Add("cellText", "cell v8")
+            .Add("horzAlign", new DescriptorWriter.EnumValue("ESliceHorzAlign", "default"))
+            .Add("vertAlign", new DescriptorWriter.EnumValue("ESliceVertAlign", "default"))
+            .Add("bgColorType", new DescriptorWriter.EnumValue("ESliceBGColorType", "Clr "))
+            .Add("bgColor", new DescriptorWriter("ARGBColor").Add("alpha", 255).Add("Rd  ", 10).Add("Grn ", 20).Add("Bl  ", 30))
+            .Add("topOutset", 1).Add("leftOutset", 2).Add("bottomOutset", 3).Add("rightOutset", 4);
+        var root = new DescriptorWriter("null").Add("baseName", "User").Add("bounds", Rect(0, 0, 64, 48)).Add("slices", new object[] { slice });
+        var builder = new PsdBuilder { Width = 64, Height = 48 };
+        builder.Resources.Add((ImageResourceIds.Slices, string.Empty, root.Versioned(8)));
+        var document = PsdDocument.Load(builder.Build());
+
+        var slices = document.Resources.Slices;
+
+        Assert.NotNull(slices);
+        Assert.Equal((8, "User", new PsdRect(0, 0, 64, 48)), (slices.Version, slices.GroupName, slices.Bounds));
+        var read = Assert.Single(slices.Slices);
+        Assert.Equal((3, PsdSliceOrigin.UserGenerated, "hero", new PsdRect(1, 2, 30, 40)), (read.Id, read.Origin, read.Name, read.Bounds));
+        Assert.Equal(("https://example.com/v8", "_self", "status", "alt v8", "cell v8"), (read.Url, read.Target, read.Message, read.AltTag, read.CellText));
+        Assert.Equal((1, 2, 3, 4), (read.TopOutset, read.LeftOutset, read.BottomOutset, read.RightOutset));
+        Assert.Equal(new PsdColor(10, 20, 30, 255), read.BackgroundColor);
+
+        var text = document.ExtractText().OfKind(Text.PsdTextKind.Slice).Select(i => (i.Source, i.Text)).ToList();
+        Assert.Equal([("slices/baseName", "User"), ("slices/name", "hero"), ("slices/url", "https://example.com/v8"), ("slices/message", "status"), ("slices/alt", "alt v8"), ("slices/cellText", "cell v8")], text);
+    }
+
     private static object?[] Views(PsdImageResources r) =>
         [r.Resolution, r.GridAndGuides, r.Thumbnail, r.Slices, r.LayerComps, r.PrintScale, r.PixelAspectRatio, r.VersionInfo, r.IccProfile, r.Xmp];
 

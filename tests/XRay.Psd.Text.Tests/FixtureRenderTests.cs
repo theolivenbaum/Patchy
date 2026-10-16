@@ -192,6 +192,31 @@ public sealed class FixtureRenderTests : IDisposable
     }
 
     [Fact]
+    public void Type_on_a_path_follows_the_curve_up_to_the_end_marker()
+    {
+        // ag-psd's text-path.psd: "some text" in Calibri 30 on a two-segment curve whose end
+        // marker sits at 0.33 of the first segment. Photoshop draws only "so" (the cached layout
+        // holds two glyphs), rising along the curve. The bundled Carlito has Calibri's metrics.
+        var layer = PsdDocument.Load(Fixtures.AgPsd("text-path.psd")).EnumerateLayersTopDown().Single(l => l.Text is not null);
+        Assert.Equal(TextShapeKind.Path, layer.Text!.ShapeKind);
+        Assert.Empty(_renderer.FindMissingFonts(layer.Text));
+
+        var layout = _renderer.Layout(layer.Text);
+        var raster = _renderer.Render(layer);
+
+        Assert.Equal(2, layout.Glyphs.Count);
+        Assert.NotNull(raster);
+        var match = TextComparison.Compare(layer, raster);
+        Assert.True(match.Iou >= 0.72, match.ToString());
+        Assert.True(match.MaxEdgeDelta <= 1, match.ToString());
+
+        // The first glyph turns up with the curve, the second less steeply.
+        var angles = layout.Glyphs.Select(g => Math.Atan2(g.B, g.A) * 180 / Math.PI).ToList();
+        Assert.InRange(angles[0], -40, -20);
+        Assert.True(angles[1] > angles[0], string.Join(", ", angles));
+    }
+
+    [Fact]
     public void Every_type_layer_renders_with_the_fallback_face()
     {
         foreach (var name in Fixtures.AllDocuments())

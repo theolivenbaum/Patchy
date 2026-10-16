@@ -19,7 +19,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/XRay.Psd/IO/` | `BigEndianReader` (bounds-checked cursor), `ChannelCodec` (raw, PackBits RLE, ZIP, ZIP-with-prediction; SIMD sample conversion), `PsdSource` (in-memory or memory-mapped file with 64-bit offsets), `StreamLoader` |
 | `src/XRay.Psd/Parallelism.cs` | `Parallelism.For`: deterministic row-strip loops, degree from `RenderOptions.MaxDegreeOfParallelism`; see `docs/performance.md` |
 | `src/XRay.Psd/PsdParser.cs` | The five file sections, layer records, mask data, tagged blocks, group tree, `lnk2` linked files |
-| `src/XRay.Psd/Layers/` | `PsdLayer`, `LayerMask`, `VectorPath` (path records to pixel coordinates), `VectorStrokeStyle` (`vstk`), `PsdLayerStyle` (public effects view over `Rendering/LayerEffects`) |
+| `src/XRay.Psd/Layers/` | `PsdLayer`, `LayerMask`, `VectorPath` (path records to pixel coordinates), `VectorStrokeStyle` (`vstk`), `PsdLayerStyle` (public effects view over `Rendering/LayerEffects`), `PsdLayerMetadata` (`shmd`: layer time, per-comp state) |
 | `src/XRay.Psd/Resources/` | `PsdImageResources` (`PsdDocument.Resources`): typed, lazily parsed image resources; see `docs/api.md` |
 | `src/XRay.Psd/Descriptors/` | Action Manager descriptor reader (`Objc`, `VlLs`, `UntF`, `tdta`, `obj `...) |
 | `src/XRay.Psd/Text/` | `EngineData` parser, `TextLayerInfo` (TySh), `TextEngineBlock` (`Txt2`) and `TextEngineResolver`, `LegacyText` (PS 5 tySh), `TextExtractor`; see `docs/text.md` |
@@ -33,9 +33,10 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `benchmarks/XRay.Psd.Benchmarks/` | BenchmarkDotNet suite (the only BenchmarkDotNet reference): load, text, decode, composite, encode, scaling |
 | `tests/XRay.Psd.Tests/` | xUnit v3 tests; `Support/PsdBuilder.cs` writes synthetic PSD/PSB files |
 | `tests/XRay.Psd.Skia.Tests/` | Skia interop tests; also decodes the built-in PNG/JPEG output with Skia |
-| `tests/XRay.Psd.Text.Tests/` | Text re-rendering tests against the type fixtures; bundles Liberation Sans (OFL) in `Fonts/`, never uses system fonts |
+| `tests/XRay.Psd.Text.Tests/` | Text re-rendering tests against the type fixtures; bundles Liberation Sans and Carlito (OFL) in `Fonts/`, never uses system fonts |
 | `tests/fixtures/psd/` | Committed PSD/PSB fixtures and Photoshop reference renders (`.bmp`) copied from `.reference/test-fixtures/psd` |
 | `tests/fixtures/psd-tools/` | Color-mode, bit-depth, smart-object and resource files from psd-tools (MIT, see `NOTICE` and its `LICENSE`) |
+| `tests/fixtures/ag-psd/` | ag-psd's Photoshop type-on-a-path file (MIT, see `NOTICE` and its `LICENSE`) |
 | `docs/porting-map.md` | Which reference files each C# area came from, and what was deliberately left out |
 | `docs/rendering.md` | Compositor model, effect pipeline, calibration status |
 | `docs/adjustments.md` | Adjustment layers: payload layouts, models, accuracy against Photoshop, noise gradients |

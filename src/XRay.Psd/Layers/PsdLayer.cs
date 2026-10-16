@@ -120,6 +120,11 @@ public sealed class PsdLayer
     /// <summary>Typed read-only view of <see cref="Effects"/> (kind, switch, blend mode, opacity, color, size...), parsed on first use; null without effects.</summary>
     public PsdLayerStyle? Style => LazyInitializer.EnsureInitialized(ref _style, () => new(PsdLayerStyle.Create(this))).Value;
 
+    private System.Runtime.CompilerServices.StrongBox<PsdLayerMetadata?>? _metadata;
+
+    /// <summary>Typed view of the metadata block (<c>shmd</c>): layer time and per-comp state, parsed on first use; null without one.</summary>
+    public PsdLayerMetadata? Metadata => LazyInitializer.EnsureInitialized(ref _metadata, () => new(GetTaggedBlock("shmd") is { } block ? PsdLayerMetadata.Parse(block.Data) : null)).Value;
+
     /// <summary>Smart-object placement descriptor (<c>SoLd</c>/<c>SoLE</c>/<c>PlLd</c>), when present.</summary>
     public Descriptor? SmartObject { get; internal set; }
 
