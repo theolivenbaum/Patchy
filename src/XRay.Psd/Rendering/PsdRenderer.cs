@@ -80,6 +80,8 @@ internal static class PsdRenderer
 {
     public static RgbaImage Render(PsdDocument document, RenderOptions options)
     {
+        // The result is one RGBA array; past it (about 23000 x 23000 pixels) only bands fit.
+        _ = IO.ChannelCodec.BufferLength((long)document.Width * document.Height * 4);
         using var scope = Parallelism.Use(options.MaxDegreeOfParallelism);
         var planar = UsesMergedImage(document, options) ? MergedImageDecoder.Decode(document) : new LayerCompositor(document, options).Render();
         var image = planar.ToRgba(document.Bounds);

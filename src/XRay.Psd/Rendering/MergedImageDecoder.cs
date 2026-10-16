@@ -40,7 +40,7 @@ internal static class MergedImageDecoder
         var wanted = Math.Min(channels, colorCount + (document.MergedImageHasTransparency ? 1 : 0));
         var compression = (PsdCompression)BinaryPrimitives.ReadUInt16BigEndian(data.Window(0, 2).Span);
         var body = data.From(2);
-        var bandBytes = checked(rowBytes * rows);
+        var bandBytes = ChannelCodec.BufferLength((long)rowBytes * rows);
         var planes = new byte[wanted][];
         switch (compression)
         {
@@ -108,7 +108,7 @@ internal static class MergedImageDecoder
         var floats = new float[]?[colorCount];
         for (var c = 0; c < colorCount; c++)
         {
-            floats[c] = new float[width * rows];
+            floats[c] = new float[ChannelCodec.BufferLength((long)width * rows)];
             ChannelCodec.ToFloat(planes[c], width, rows, depth, floats[c]);
         }
 

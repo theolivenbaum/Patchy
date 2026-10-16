@@ -220,7 +220,7 @@ public sealed class PsdLayer
             bytes = ChannelCodec.DecodeLayerChannelRows(channel.Bytes, rect.Width, rect.Height, doc.Depth, doc.IsLargeDocument, first, end, readers?.For(channel));
         }
 
-        var plane = new float[checked(rect.Width * rows)];
+        var plane = new float[ChannelCodec.BufferLength((long)rect.Width * rows)];
         ChannelCodec.ToFloat(bytes, rect.Width, rows, doc.Depth, plane);
         return plane;
     }

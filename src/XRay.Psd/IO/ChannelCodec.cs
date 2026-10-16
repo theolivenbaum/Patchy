@@ -23,13 +23,22 @@ internal static class ChannelCodec
     };
 
     /// <summary>
+    /// <paramref name="length"/> as an array length, or a <see cref="PsdFormatException"/> when
+    /// one array cannot hold it (a channel too large to decode in one piece; band rendering
+    /// decodes such channels a band at a time).
+    /// </summary>
+    public static int BufferLength(long length) => length <= Array.MaxLength
+        ? (int)Math.Max(0, length)
+        : throw new PsdFormatException($"{length} bytes do not fit one buffer; render large documents in bands (PsdDocument.RenderBands or RenderToPng).");
+
+    /// <summary>
     /// Decodes a layer channel payload whose first two bytes are the compression
     /// method. Returns <c>height * RowBytes(width, depth)</c> big-endian bytes.
     /// </summary>
     public static byte[] DecodeLayerChannel(ReadOnlySpan<byte> payload, int width, int height, int depth, bool large)
     {
         var rowBytes = RowBytes(width, depth);
-        var output = new byte[checked(rowBytes * height)];
+        var output = new byte[BufferLength((long)rowBytes * height)];
         if (width <= 0 || height <= 0 || payload.Length < 2)
         {
             return output;
@@ -85,7 +94,7 @@ internal static class ChannelCodec
         first = Math.Clamp(first, 0, Math.Max(0, height));
         end = Math.Clamp(end, first, Math.Max(0, height));
         var rows = end - first;
-        var output = new byte[checked(rowBytes * rows)];
+        var output = new byte[BufferLength((long)rowBytes * rows)];
         if (width <= 0 || rows <= 0 || payload.Length < 2)
         {
             return output;
