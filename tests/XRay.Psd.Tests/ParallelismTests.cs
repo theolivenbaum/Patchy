@@ -249,6 +249,27 @@ public sealed class ParallelismTests
         }
     }
 
+    [Theory]
+    [InlineData("qual_rca_pinout.psd")]
+    [InlineData("photoshop-gradient-overlay-geometry.psd")]
+    public void Band_prefetch_and_png_rows_are_identical_at_every_degree(string name)
+    {
+        var document = Fixtures.Load(name);
+        byte[] sequential;
+        using (var stream = new MemoryStream())
+        {
+            document.RenderToPng(stream, new RenderOptions { Source = RenderSource.Layers, BandHeight = 50, MaxDegreeOfParallelism = 1 });
+            sequential = stream.ToArray();
+        }
+
+        using (Parallelism.Use(Degree, minimumStripWork: 1))
+        {
+            using var stream = new MemoryStream();
+            document.RenderToPng(stream, new RenderOptions { Source = RenderSource.Layers, BandHeight = 50, MaxDegreeOfParallelism = Degree });
+            Assert.Equal(sequential, stream.ToArray());
+        }
+    }
+
     [Fact]
     public void Path_rasterizer_bands_and_row_windows_match_the_sequential_raster()
     {

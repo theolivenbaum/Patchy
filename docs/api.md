@@ -29,9 +29,13 @@ The reference reads only 1005 and 1032 (`.reference/src/psd/psd_image_resources.
 
 Each `PsdLayerEffect` has its kind, switch, blend mode, opacity (0 to 1), color, and where they apply size, distance, angle (with "Use Global Light" resolved), spread or choke, stroke position, bevel style, technique, altitude and depth, and the bevel shadow mode, color and opacity. The values come from the compositor's own parser (`Rendering/LayerEffects.cs`), so defaults and clamps match what renders. A disabled effect is parsed as if it were enabled, so it reports the same values Photoshop would apply if switched on. Gradient and pattern fills report `HasGradient` and a null `Color`.
 
+## Band rendering
+
+`PsdDocument.RenderBands(options)` yields `RenderBand` values (`Top`, and an `Image` as wide as the document) top to bottom, rendering each when the enumeration reaches it; `RenderOptions.BandHeight` sets the rows per band (0 picks about four million pixels). `RenderToPng(stream)` and `RenderToPng(path)` stream the bands into a PNG. The pixels equal `Render`'s, and `Render` itself throws `PsdFormatException` for documents whose canvas does not fit one array. What still works on its whole extent is listed in `docs/performance.md`.
+
 ## Command line
 
-`psdtool info file.psd --resources` prints the typed resources; `--effects` prints each layer's effects under it.
+`psdtool info file.psd --resources` prints the typed resources; `--effects` prints each layer's effects under it. `psdtool render file.psb out.png --bands ROWS` renders through `RenderToPng` (`ROWS` 0 picks the band height).
 
 ## Packages
 

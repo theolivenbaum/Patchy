@@ -10,7 +10,7 @@ How `PsdDocument.Render` produces pixels, and how close each part is to Photosho
 
 ## Pixel model
 
-Everything composites as straight-alpha float32 planes (`PlanarImage`: R, G, B, A arrays positioned in document space). Layer channels decode lazily (`PsdLayer.DecodePixels`) and convert to sRGB in `ColorSpaces`. Planar storage keeps every hot loop a contiguous `Vector<float>` walk:
+Everything composites as straight-alpha float32 planes (`PlanarImage`: R, G, B, A arrays positioned in document space). `RenderBands` and `RenderToPng` run the same compositor a band of rows at a time with identical results; buffers then hold only the band's rows and carry their whole-render bounds in `PlanarImage.Logical` ([performance.md](performance.md#band-rendering)). Layer channels decode lazily (`PsdLayer.DecodePixels`) and convert to sRGB in `ColorSpaces`. Planar storage keeps every hot loop a contiguous `Vector<float>` walk:
 
 - `BlendKernels.CompositeRow` applies source-over with blend `B(Cs, Cb)`: `co = as(1-ab)Cs + as*ab*B + (1-as)ab*Cb`, `ao = as + ab - as*ab`, stored as `co/ao`. Clip mode treats the destination as opaque inside existing coverage and never grows alpha (clipping groups, adjustment layers, folded overlays).
 - Each blend mode is a struct implementing `IChannelBlend` or `IBlendOp` with static abstract members; `Row<TOp>` is specialized by the JIT, so there is no per-pixel dispatch. Tails run through the same vector step on a padded copy.
