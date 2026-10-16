@@ -9,7 +9,7 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 - PSD/PSB parsing: header, color mode data, image resources, layer records, mask data (all three layouts, mask parameters), tagged blocks (including PSB wide lengths and 4-byte padded global blocks), group tree, 16/32-bit layers in `Lr16`/`Lr32`, `lnk2`/`lnkD`/`lnk3`/`lnkE` linked files.
 - Channel decoding: raw, PackBits, ZIP, ZIP with prediction at 1/8/16/32 bits; SIMD sample conversion.
 - Color modes: RGB, grayscale, bitmap, indexed, CMYK, Lab (D50 to sRGB), duotone (ink curves from the specification), multichannel (first three planes as CMY inks, as in the reference).
-- Descriptor and EngineData parsers; TySh text with style runs (character properties), paragraphs (indents, spacing, direction), fonts, orientation, warp, bounds; the global `Txt2` block as a typed model that fills TySh gaps; PS 5 `tySh` text with style runs, alignment and color. See `docs/text.md`.
+- Descriptor and EngineData parsers; TySh text with style runs (character properties), paragraphs (indents, spacing, direction), fonts, orientation, warp, bounds; the global `Txt2` block as a typed model that fills TySh gaps, with its style keys mapped against the corpus and type-on-a-path frames decoded into `TextPath`; per-layer metadata and layer comp state (`PsdLayer.Metadata`); PS 5 `tySh` text with style runs, alignment and color. See `docs/text.md`.
 - ICC color management: embedded profiles (resource 1039) convert gray, RGB, indexed and CMYK pixels to sRGB with relative colorimetric intent and black point compensation, matching the reference's lcms2 setup; descriptor, text, legacy and pattern colors go through the same transform; absolute colorimetric, float `D2Bx` LUTs and 32-bit RGB with LUT-only profiles are supported (`docs/color.md`).
 - Text extraction: layer/group names, type layers, channel names, path names, slices, XMP and IPTC metadata, recursion into embedded PSD/PSB smart objects.
 - Compositor: all 27 blend modes (SIMD), opacity and fill (special Fill on the eight modes), pass-through and isolated groups, clipping runs, raster masks (density, feather), vector masks (baked plane or rasterized, density, unclamped feather), solid fill layers, Dissolve, Blend If, channel restrictions.
@@ -19,7 +19,7 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 - Gradient (`GdFl`) and pattern (`PtFl`) fill layers; the `Patt` pattern store.
 - Vector strokes on shape layers (`vstk`): width, alignment, caps, joins, miter limit, dashes, solid/gradient/pattern paint, opacity, blend mode, `fillEnabled`.
 - Output: built-in PNG and JPEG encoders; optional SkiaSharp package.
-- Type-layer re-rendering in the optional `XRay.Psd.Text` package (HarfBuzz shaping, Skia outlines): point, box and vertical text, runs, leading, tracking, glyph scales, faux styles, alignment, transform, pixel-grid rounding, Warp Text, pluggable font resolution; plugged into the compositor through `RenderOptions.TextRasterizer`. See `docs/text-rendering.md`.
+- Type-layer re-rendering in the optional `XRay.Psd.Text` package (HarfBuzz shaping, Skia outlines): point, box, vertical and on-path text, runs, leading, tracking, glyph scales, faux styles, alignment, transform, pixel-grid rounding, Warp Text, pluggable font resolution; plugged into the compositor through `RenderOptions.TextRasterizer`. See `docs/text-rendering.md`.
 
 ## Rendering gaps (highest impact first)
 
@@ -41,9 +41,9 @@ Use the survey (`XRAY_PSD_SURVEY=1`, see CLAUDE.md) to measure progress: each it
 
 ## Text
 
-- Type on a path: decode the path geometry (the TySh EngineData shape and the `Txt2` frame path) into a typed path once a Photoshop fixture with on-path text exists. Today such layers report `TextShapeKind.Other` and raw frame points, and `XRay.Psd.Text` does not draw them (it keeps the stored pixels); once the path is typed, lay glyphs along it.
-- `Txt2` style keys without a pinned meaning (underline, strikethrough, caps, manual kerning) need single-setting captures before they can be mapped (`.reference/docs/txt2.md`, "Key map"). No committed fixture sets them, so they stay unmapped.
-- A real Photoshop 5 `tySh` fixture (the reference's Title02.psd is not public); the tests build synthetic records.
+- Type on a path rests on one Photoshop file (ag-psd's `text-path.psd`: open path, left-justified, not flipped; `docs/text.md`, "Type on a path"). Captures of a closed path, flipped text, centered and right-justified path text, a glyph straddling the end marker, and vertical type on a path (not drawn today) would confirm the range units on other shapes, the flip key (`/2/11/0`, taken from ag-psd's names) and the placement rules. The other path data keys (`/2/11/3`, `/5`, `/7`) are unknown.
+- `Txt2` style keys: caps (12) and baseline direction (35) are confirmed against TySh runs; baseline position (13), strikethrough (15), underline (16), discretionary ligatures (19) and no break (52) follow the engine's key order and match only zero and false values, so a file that sets them should pin their nonzero values. Manual kerning has no `Txt2` style key; a capture with kerning between two characters would show where it lives. Key 11 (kerning method) disagrees with TySh `AutoKerning` in psd-tools' `layer_effects.psd` and `text.psb`.
+- A real Photoshop 5 `tySh` fixture (the reference's Title02.psd is not public, and none of the 356 psd-tools files has one); the tests build synthetic records.
 - Text re-rendering (`XRay.Psd.Text`, see [docs/text-rendering.md](docs/text-rendering.md)) residuals, each needing Photoshop captures: Crisp/Strong stem fitting and Smooth's heavier stems; glyph x positions under a horizontal scale (`photoshop-text-hv-scale` looks fractional); horizontal overset (intersect or fit); manual kerning placement; Small Caps and super/subscript sizes from the document's preferences; the glyph stroke (`StrokeFlag`); vertical box text beyond the one capture; mixed-direction bidi lines. Not modeled yet: hyphenation, kinsoku, tab stops, justification spacing limits, list bullets, optical kerning.
 - A fixture with Photoshop's own text in a font the tests can bundle (Liberation, Noto) would make the re-render comparable glyph for glyph; today Liberation Sans stands in for Arial (same advances, different outlines, IoU ceiling about 0.8).
 
@@ -60,7 +60,8 @@ Benchmarks, the parallel model and the loading paths are described in [docs/perf
 
 - PSD writing (the reference writer is `.reference/src/psd/psd_document_io.cpp` plus `.reference/docs/ps-compat.md`; every written file must open in Photoshop without warnings).
 - A package icon, and a CI workflow that builds, tests and packs with `ContinuousIntegrationBuild`. The reference repository's workflows were disabled on purpose; add new ones under `.github/workflows/` only when asked.
-- Typed views not written yet: per-layer comp state (`shmd` metadata), legacy `lrFX` effects (Photoshop 5) in `PsdLayer.Style`, the slices descriptor (v7/v8) checked against a real Photoshop file (only the v6 layout has fixtures), and the raw-RGB thumbnail format in a real file.
+- Typed views not written yet: legacy `lrFX` effects (Photoshop 5) in `PsdLayer.Style`; the animation items of `PsdLayer.Metadata` (`mlst` frames, `mdyn` flags, `tmln` timeline) beyond their raw descriptors. Applying a layer comp when rendering (`PsdLayerCompState` has the visibility, offset and appearance) is not implemented.
+- Real-file checks still missing: a version 7 slices resource (the corpus has version 6 and 8 only) and a raw-RGB thumbnail (every real file seen stores JPEG); both layouts are covered by synthetic tests.
 
 ## Testing
 
