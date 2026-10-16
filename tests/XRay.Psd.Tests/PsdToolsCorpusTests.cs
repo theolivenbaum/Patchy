@@ -58,12 +58,14 @@ public sealed class PsdToolsCorpusTests
         // In the 8-bit files the gradient fill layer carries baked pixels and the
         // compositor must reproduce Photoshop's composite. The 16 and 32-bit files
         // store the fill without pixels, so it is regenerated from its GdFl
-        // descriptor, which does not match yet (TODO.md, Rendering gaps).
-        if (document.Layers.Count > 0 && depth == 8)
+        // descriptor (GradientTests); CMYK and Lab keep a residual in their mixed
+        // midtones and stop colors.
+        if (document.Layers.Count > 0)
         {
             var layers = document.Render(new RenderOptions { Source = RenderSource.Layers });
             var diff = ImageTools.Compare(layers, merged);
-            Assert.True(diff.MaxDelta <= 2, $"{name}: layers vs merged {diff}");
+            var tolerance = depth == 8 ? 2 : mode is PsdColorMode.Cmyk or PsdColorMode.Lab ? 11 : 3;
+            Assert.True(diff.MaxDelta <= tolerance, $"{name}: layers vs merged {diff}");
         }
     }
 

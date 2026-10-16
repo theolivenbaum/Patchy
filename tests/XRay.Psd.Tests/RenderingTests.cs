@@ -81,7 +81,7 @@ public sealed class RenderingTests
     [InlineData("photoshop-pattern-transparent.psd", 1, 0.01)]
     [InlineData("photoshop-pattern-scale.psd", 34, 2.0)]
     [InlineData("photoshop-shape-pattern.psd", 8, 0.1)]
-    [InlineData("photoshop-shape-gradient.psd", 10, 1.3)]
+    [InlineData("photoshop-shape-gradient.psd", 6, 0.4)]
     [InlineData("photoshop-bevel-smooth.psd", 4, 0.05)]
     [InlineData("photoshop-emboss-styles.psd", 30, 0.15)]
     [InlineData("photoshop-pillow-emboss.psd", 75, 0.1)]
