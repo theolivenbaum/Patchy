@@ -252,6 +252,7 @@ internal sealed partial class LayerCompositor
             var (dx, dy) = Offset(shadow.AngleDegrees, shadow.Distance);
             var plane = Shifted(styled, dx, dy);
             EffectMasks.SoftExterior(plane, domain.Width, domain.Height, shadow.Size, shadow.SpreadOrChoke);
+            ApplyContour(plane, shadow.Contour, shadow.ContourAntiAliased);
             var conceals = shadow.LayerConceals;
             DrawEffect(target, styled, new Plane(domain, plane), shadow.Opacity * styled.Opacity, shadow.Color, shadow.Mode, masks, clipMode,
                 (x, y) => conceals ? ExteriorKnockout(styled.MatteAt(x, y), paintScale) : 1f);
@@ -274,8 +275,11 @@ internal sealed partial class LayerCompositor
                 EffectMasks.SoftExterior(plane, domain.Width, domain.Height, glow.Size, glow.SpreadOrChoke);
                 ApplyRange(plane, glow.Range, center: false);
             }
+
+            ApplyContour(plane, glow.Contour, glow.ContourAntiAliased);
+            var paint = GlowPaint(glow, plane, domain);
             DrawEffect(target, styled, new Plane(domain, plane), glow.Opacity * styled.Opacity, glow.Color, glow.Mode, masks, clipMode,
-                (x, y) => ExteriorKnockout(styled.MatteAt(x, y), paintScale));
+                (x, y) => ExteriorKnockout(styled.MatteAt(x, y), paintScale), paint);
         }
     }
 
@@ -303,7 +307,9 @@ internal sealed partial class LayerCompositor
                 EffectMasks.SoftInterior(plane, domain.Width, domain.Height, glow.Size, glow.SpreadOrChoke);
                 ApplyRange(plane, glow.Range, glow.CenterSource);
             }
-            DrawEffect(target, styled, new Plane(domain, plane), glow.Opacity * styled.Opacity, glow.Color, glow.Mode, masks, clipMode, Inside);
+
+            ApplyContour(plane, glow.Contour, glow.ContourAntiAliased);
+            DrawEffect(target, styled, new Plane(domain, plane), glow.Opacity * styled.Opacity, glow.Color, glow.Mode, masks, clipMode, Inside, GlowPaint(glow, plane, domain));
         }
 
         foreach (var shadow in fx.InnerShadows)
@@ -316,6 +322,7 @@ internal sealed partial class LayerCompositor
             var (dx, dy) = Offset(shadow.AngleDegrees, shadow.Distance);
             var plane = Shifted(styled, dx, dy);
             EffectMasks.SoftInterior(plane, domain.Width, domain.Height, shadow.Size, shadow.SpreadOrChoke);
+            ApplyContour(plane, shadow.Contour, shadow.ContourAntiAliased);
             DrawEffect(target, styled, new Plane(domain, plane), shadow.Opacity * styled.Opacity, shadow.Color, shadow.Mode, masks, clipMode, Inside);
         }
 
@@ -878,10 +885,7 @@ internal sealed partial class LayerCompositor
     private void CompositeStyledClipRun(PlanarImage target, PsdLayer layer, PlanarImage source, LayerEffects fx, IReadOnlyList<PsdLayer> members, MaskChain? masks)
     {
         var content = source.Clone();
-        foreach (var member in members)
-        {
-            CompositeLayer(content, member, null, null, clipMode: true);
-        }
+        CompositeClipMembers(content, members);
 
         var styled = PrepareStyled(layer, source, fx);
         if (styled is null)

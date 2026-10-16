@@ -47,6 +47,13 @@ internal sealed partial class LayerCompositor
 
     private void CompositeList(PlanarImage target, IReadOnlyList<PsdLayer> siblings, MaskChain? masks)
     {
+        var knockout = EnterKnockoutScope(target, siblings);
+        CompositeSiblings(target, siblings, masks, knockout);
+        ExitKnockoutScope(knockout);
+    }
+
+    private void CompositeSiblings(PlanarImage target, IReadOnlyList<PsdLayer> siblings, MaskChain? masks, KnockoutScope? knockout)
+    {
         var index = 0;
         while (index < siblings.Count)
         {
@@ -62,7 +69,8 @@ internal sealed partial class LayerCompositor
 
             if (runEnd == index + 1 || !IsClipBase(layer))
             {
-                CompositeLayer(target, layer, masks, null, clipMode: false);
+                CompositeKnockoutElement(target, layer, knockout, masks, () => CompositeLayer(target, layer, masks, null, clipMode: false));
+                NoteKnockoutBackground(knockout, target, layer);
                 index++;
                 continue;
             }
@@ -86,7 +94,7 @@ internal sealed partial class LayerCompositor
                     members.Add(siblings[member]);
                 }
 
-                WithChannelRestriction(target, baseRestriction, AffectedBounds(layer), () => CompositeStyledClipRun(target, layer, baseSource, baseEffects, members, masks));
+                CompositeKnockoutElement(target, layer, knockout, masks, () => WithChannelRestriction(target, baseRestriction, AffectedBounds(layer), () => CompositeStyledClipRun(target, layer, baseSource, baseEffects, members, masks)));
                 index = runEnd;
                 continue;
             }
@@ -105,14 +113,10 @@ internal sealed partial class LayerCompositor
                 }
 
                 CompositeLayer(group, layer, null, PsdBlendMode.Normal, clipMode: false, gateBackdrop, suppressRestriction: true);
-                for (var member = index + 1; member < runEnd; member++)
-                {
-                    CompositeLayer(group, siblings[member], null, null, clipMode: true);
-                }
-
+                CompositeClipMembers(group, siblings.Skip(index + 1).Take(runEnd - index - 1));
                 _clipCoverage.Remove(group);
                 var mode = layer.BlendMode == PsdBlendMode.PassThrough ? PsdBlendMode.Normal : layer.BlendMode;
-                WithChannelRestriction(target, baseRestriction, bounds, () => MergeImage(target, group, mode, 1f, masks, clipMode: false));
+                CompositeKnockoutElement(target, layer, knockout, masks, () => WithChannelRestriction(target, baseRestriction, bounds, () => MergeImage(target, group, mode, 1f, masks, clipMode: false)));
             }
 
             index = runEnd;
