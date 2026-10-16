@@ -108,6 +108,9 @@ public sealed class PsdDocument : IDisposable
 
     internal ReadOnlyMemory<byte> MergedImageData { get; set; }
 
+    /// <summary>The image data section, wherever it lives (a file range past one span on large PSB files).</summary>
+    internal ByteRange MergedImage { get; set; }
+
     internal ReadOnlyMemory<byte> FileData { get; set; }
 
     /// <summary>The memory-mapped file behind the document, released by <see cref="Dispose"/>.</summary>

@@ -62,7 +62,7 @@ internal static class PsdRenderer
         {
             RenderSource.MergedImage => true,
             RenderSource.Layers => false,
-            _ => options.LayerVisibility is null && !options.RerendersAllText && (document.HasRealMergedImage || document.Layers.Count == 0) && document.MergedImageData.Length >= 2,
+            _ => options.LayerVisibility is null && !options.RerendersAllText && (document.HasRealMergedImage || document.Layers.Count == 0) && document.MergedImage.Length >= 2,
         };
 
         var planar = useMerged ? MergedImageDecoder.Decode(document) : new LayerCompositor(document, options).Render();

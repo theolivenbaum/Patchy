@@ -8,8 +8,19 @@ namespace XRay.Psd.Layers;
 /// <summary>A tagged ("additional layer information") block: a four-character key and its raw payload.</summary>
 public sealed record TaggedBlock(string Key, ReadOnlyMemory<byte> Data);
 
-/// <summary>One stored channel of a layer: ID (0.. color, -1 alpha, -2/-3 masks) and its compressed payload.</summary>
-public sealed record LayerChannel(short Id, ReadOnlyMemory<byte> Data);
+/// <summary>
+/// One stored channel of a layer: ID (0.. color, -1 alpha, -2/-3 masks) and its compressed payload.
+/// A payload longer than one span can address (a PSB channel past 2 GB) leaves
+/// <see cref="Data"/> empty; rendering still reads it from the file.
+/// </summary>
+public sealed record LayerChannel(short Id, ReadOnlyMemory<byte> Data)
+{
+    /// <summary>The payload as a file range when it is too long for <see cref="Data"/>.</summary>
+    internal IO.ByteRange? LargeData { get; init; }
+
+    /// <summary>The payload, wherever it lives.</summary>
+    internal IO.ByteRange Bytes => LargeData ?? new IO.ByteRange(Data);
+}
 
 /// <summary>
 /// A layer record from the layer and mask section, linked into the group tree.
@@ -179,18 +190,38 @@ public sealed class PsdLayer
     public string Path => Parent is null ? Name : $"{Parent.Path}/{Name}";
 
     /// <summary>Decodes one channel to a float plane of <paramref name="rect"/> size (masks use their own rectangle).</summary>
-    internal float[]? DecodeChannelPlane(short id, PsdRect rect)
+    internal float[]? DecodeChannelPlane(short id, PsdRect rect) => DecodeChannelPlane(id, rect, rect.Top, rect.Bottom, null);
+
+    /// <summary>
+    /// Decodes document rows [<paramref name="top"/>, <paramref name="bottom"/>) of one
+    /// channel stored over <paramref name="rect"/> into a plane of just those rows; each
+    /// row is identical to the same row of the whole plane. <paramref name="readers"/>
+    /// keeps ZIP streams open between consecutive row ranges.
+    /// </summary>
+    internal float[]? DecodeChannelPlane(short id, PsdRect rect, int top, int bottom, IO.ChannelReaders? readers)
     {
         var channel = GetChannel(id);
-        if (channel is null || rect.IsEmpty)
+        var first = Math.Clamp(top - rect.Top, 0, Math.Max(0, rect.Height));
+        var end = Math.Clamp(bottom - rect.Top, first, Math.Max(0, rect.Height));
+        if (channel is null || rect.IsEmpty || end <= first)
         {
             return null;
         }
 
         var doc = Document;
-        var bytes = ChannelCodec.DecodeLayerChannel(channel.Data.Span, rect.Width, rect.Height, doc.Depth, doc.IsLargeDocument);
-        var plane = new float[rect.Width * rect.Height];
-        ChannelCodec.ToFloat(bytes, rect.Width, rect.Height, doc.Depth, plane);
+        var rows = end - first;
+        byte[] bytes;
+        if (first == 0 && end == rect.Height && readers is null && channel.LargeData is null)
+        {
+            bytes = ChannelCodec.DecodeLayerChannel(channel.Data.Span, rect.Width, rect.Height, doc.Depth, doc.IsLargeDocument);
+        }
+        else
+        {
+            bytes = ChannelCodec.DecodeLayerChannelRows(channel.Bytes, rect.Width, rect.Height, doc.Depth, doc.IsLargeDocument, first, end, readers?.For(channel));
+        }
+
+        var plane = new float[checked(rect.Width * rows)];
+        ChannelCodec.ToFloat(bytes, rect.Width, rows, doc.Depth, plane);
         return plane;
     }
 
@@ -198,35 +229,66 @@ public sealed class PsdLayer
     /// Decodes the layer's stored pixels (layer bounds) to straight sRGB floats.
     /// Masks, opacity and blend mode are not applied.
     /// </summary>
-    internal PlanarImage? DecodePixels()
+    internal PlanarImage? DecodePixels() => DecodePixels(Bounds.Top, Bounds.Bottom, null);
+
+    /// <summary>Whether <see cref="DecodePixels()"/> returns an image: the layer has bounds and a color or alpha channel.</summary>
+    internal bool HasStoredPixels
+    {
+        get
+        {
+            if (Bounds.IsEmpty)
+            {
+                return false;
+            }
+
+            var colorCount = ColorSpaces.ColorChannelCount(Document.ColorMode);
+            for (var i = -1; i < colorCount; i++)
+            {
+                if (GetChannel((short)i) is not null)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Decodes the stored pixels of document rows [<paramref name="top"/>, <paramref name="bottom"/>)
+    /// (cut to the layer bounds). Returns null exactly when <see cref="DecodePixels()"/>
+    /// would; otherwise an image whose <see cref="PlanarImage.Logical"/> bounds are the
+    /// layer's, holding the requested rows (possibly none), each identical to the whole decode.
+    /// </summary>
+    internal PlanarImage? DecodePixels(int top, int bottom, IO.ChannelReaders? readers)
     {
         var bounds = Bounds;
-        if (bounds.IsEmpty)
+        if (!HasStoredPixels)
         {
             return null;
+        }
+
+        var rows = new PsdRect(bounds.Left, Math.Max(bounds.Top, top), bounds.Right, Math.Min(bounds.Bottom, bottom));
+        if (rows.IsEmpty)
+        {
+            return new PlanarImage(default) { Logical = bounds };
         }
 
         var doc = Document;
         var colorCount = ColorSpaces.ColorChannelCount(doc.ColorMode);
         // Color planes, then alpha (index colorCount), inflated in parallel.
         var decoded = new float[]?[colorCount + 1];
-        Parallelism.For(decoded.Length, (long)bounds.Width * bounds.Height, (start, end) =>
+        Parallelism.For(decoded.Length, (long)rows.Width * rows.Height, (start, end) =>
         {
             for (var i = start; i < end; i++)
             {
-                decoded[i] = DecodeChannelPlane(i < colorCount ? (short)i : (short)-1, bounds);
+                decoded[i] = DecodeChannelPlane(i < colorCount ? (short)i : (short)-1, bounds, rows.Top, rows.Bottom, readers);
             }
         });
 
         var planes = decoded[..colorCount];
         var alpha = decoded[colorCount];
-        var any = Array.Exists(planes, plane => plane is not null);
-        if (!any && alpha is null)
-        {
-            return null;
-        }
-
-        var image = new PlanarImage(bounds);
+        var image = new PlanarImage(rows) { Logical = bounds };
         ColorSpaces.ToRgb(doc, doc.Depth, planes, image);
         if (alpha is not null)
         {
