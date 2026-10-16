@@ -7,10 +7,22 @@ namespace XRay.Psd.Rendering;
 /// <summary>Decodes the image data section: the flattened composite Photoshop saves after the layers.</summary>
 internal static class MergedImageDecoder
 {
-    public static PlanarImage Decode(PsdDocument document)
+    public static PlanarImage Decode(PsdDocument document) => Decode(document, 0, document.Height, null);
+
+    /// <summary>
+    /// Decodes document rows [<paramref name="top"/>, <paramref name="bottom"/>) into an image of
+    /// those rows whose <see cref="PlanarImage.Logical"/> bounds are the document's. Every row
+    /// is identical to the same row of a whole decode. The section is read as a file range,
+    /// so a merged image past 2 GB decodes completely. <paramref name="bands"/> carries the
+    /// RLE channel offsets and the ZIP streams from one band to the next.
+    /// </summary>
+    public static PlanarImage Decode(PsdDocument document, int top, int bottom, MergedImageBands? bands)
     {
-        var image = new PlanarImage(document.Bounds);
-        var data = document.MergedImageData.Span;
+        top = Math.Clamp(top, 0, document.Height);
+        bottom = Math.Clamp(bottom, top, document.Height);
+        var rect = new PsdRect(0, top, document.Width, bottom);
+        var image = new PlanarImage(rect) { Logical = document.Bounds };
+        var data = document.MergedImage;
         if (data.Length < 2)
         {
             image.Fill(1f, 1f, 1f, 1f);
@@ -19,27 +31,24 @@ internal static class MergedImageDecoder
 
         var width = document.Width;
         var height = document.Height;
+        var rows = bottom - top;
         var depth = document.Depth;
         var channels = document.ChannelCount;
         var rowBytes = ChannelCodec.RowBytes(width, depth);
         var planeBytes = (long)rowBytes * height;
         var colorCount = Math.Min(ColorSpaces.ColorChannelCount(document.ColorMode), channels);
         var wanted = Math.Min(channels, colorCount + (document.MergedImageHasTransparency ? 1 : 0));
-        var compression = (PsdCompression)BinaryPrimitives.ReadUInt16BigEndian(data);
-        var body = data[2..];
+        var compression = (PsdCompression)BinaryPrimitives.ReadUInt16BigEndian(data.Window(0, 2).Span);
+        var body = data.From(2);
+        var bandBytes = ChannelCodec.BufferLength((long)rowBytes * rows);
         var planes = new byte[wanted][];
         switch (compression)
         {
             case PsdCompression.Raw:
                 for (var c = 0; c < wanted; c++)
                 {
-                    planes[c] = new byte[planeBytes];
-                    var start = c * planeBytes;
-                    if (start < body.Length)
-                    {
-                        var available = (int)Math.Min(planeBytes, body.Length - start);
-                        body.Slice((int)start, available).CopyTo(planes[c]);
-                    }
+                    planes[c] = new byte[bandBytes];
+                    body.Window((c * planeBytes) + ((long)top * rowBytes), bandBytes).Span.CopyTo(planes[c]);
                 }
 
                 break;
@@ -52,25 +61,20 @@ internal static class MergedImageDecoder
                         throw new PsdFormatException("Merged image RLE table is truncated.");
                     }
 
-                    var counts = body[..(int)tableBytes];
-                    var rows = body[(int)tableBytes..];
-                    var offset = 0L;
+                    var packed = body.From(tableBytes);
+                    var starts = bands?.RleStarts ?? RleChannelStarts(body, countSize, height, wanted);
+                    if (bands is not null)
+                    {
+                        bands.RleStarts = starts;
+                    }
+
                     for (var c = 0; c < wanted; c++)
                     {
-                        var channelCounts = counts.Slice(c * height * countSize, height * countSize);
-                        var size = 0L;
-                        for (var row = 0; row < height; row++)
-                        {
-                            size += countSize == 4
-                                ? BinaryPrimitives.ReadUInt32BigEndian(channelCounts[(row * 4)..])
-                                : BinaryPrimitives.ReadUInt16BigEndian(channelCounts[(row * 2)..]);
-                        }
-
-                        planes[c] = new byte[planeBytes];
-                        var start = (int)Math.Min(offset, rows.Length);
-                        var length = (int)Math.Min(size, rows.Length - start);
-                        ChannelCodec.DecodeRle(rows.Slice(start, length), channelCounts, countSize, height, rowBytes, planes[c]);
-                        offset += size;
+                        var counts = body.Slice((long)c * height * countSize, (long)height * countSize);
+                        var start = Math.Min(starts[c], packed.Length);
+                        var channelBody = packed.Slice(start, Math.Min(starts[c + 1] - starts[c], packed.Length - start));
+                        planes[c] = new byte[bandBytes];
+                        ChannelCodec.DecodeRleRows(counts, channelBody, countSize, rowBytes, top, bottom, planes[c]);
                     }
 
                     break;
@@ -79,16 +83,19 @@ internal static class MergedImageDecoder
             case PsdCompression.Zip:
             case PsdCompression.ZipPrediction:
                 {
-                    var all = new byte[planeBytes * channels];
-                    ChannelCodec.Inflate(body, all);
-                    if (compression == PsdCompression.ZipPrediction)
-                    {
-                        ChannelCodec.UndoPrediction(all, width, height * channels, depth);
-                    }
-
+                    // One stream holds every channel. A single decode walks it once; bands keep
+                    // one stream per channel, each reading its rows at its own offset.
+                    using var single = bands is null ? new ZipRowReader() : null;
                     for (var c = 0; c < wanted; c++)
                     {
-                        planes[c] = all.AsSpan((int)(c * planeBytes), (int)planeBytes).ToArray();
+                        planes[c] = new byte[bandBytes];
+                        var offset = (c * planeBytes) + ((long)top * rowBytes);
+                        (single ?? bands!.Zip(c)).Read(body, offset, planes[c]);
+
+                        if (compression == PsdCompression.ZipPrediction)
+                        {
+                            ChannelCodec.UndoPrediction(planes[c], width, rows, depth);
+                        }
                     }
 
                     break;
@@ -101,14 +108,14 @@ internal static class MergedImageDecoder
         var floats = new float[]?[colorCount];
         for (var c = 0; c < colorCount; c++)
         {
-            floats[c] = new float[width * height];
-            ChannelCodec.ToFloat(planes[c], width, height, depth, floats[c]);
+            floats[c] = new float[ChannelCodec.BufferLength((long)width * rows)];
+            ChannelCodec.ToFloat(planes[c], width, rows, depth, floats[c]);
         }
 
         ColorSpaces.ToRgb(document, depth, floats, image);
         if (wanted > colorCount)
         {
-            ChannelCodec.ToFloat(planes[colorCount], width, height, depth, image.A);
+            ChannelCodec.ToFloat(planes[colorCount], width, rows, depth, image.A);
             if (depth == 1)
             {
                 // A 1-bit plane decodes set bits as 0; transparency uses the opposite sense.
@@ -126,6 +133,37 @@ internal static class MergedImageDecoder
         }
 
         return image;
+    }
+
+    /// <summary>
+    /// Where each wanted channel's packed rows start after the count table: the sum of the
+    /// earlier channels' row counts (unclamped, as the sequential walk adds them up), plus
+    /// one end entry.
+    /// </summary>
+    private static long[] RleChannelStarts(ByteRange body, int countSize, int height, int wanted)
+    {
+        var starts = new long[wanted + 1];
+        var offset = 0L;
+        const int chunk = 1 << 20;
+        for (var c = 0; c < wanted; c++)
+        {
+            starts[c] = offset;
+            var size = 0L;
+            for (var row = 0; row < height; row += chunk / countSize)
+            {
+                var count = Math.Min(chunk / countSize, height - row);
+                var table = body.Window(((long)c * height * countSize) + ((long)row * countSize), count * countSize).Span;
+                for (var i = 0; i < count; i++)
+                {
+                    size += countSize == 4 ? BinaryPrimitives.ReadUInt32BigEndian(table[(i * 4)..]) : BinaryPrimitives.ReadUInt16BigEndian(table[(i * 2)..]);
+                }
+            }
+
+            offset += size;
+        }
+
+        starts[wanted] = offset;
+        return starts;
     }
 
     /// <summary>
@@ -160,5 +198,35 @@ internal static class MergedImageDecoder
             image.G[i] = Math.Clamp((image.G[i] - (1f - a)) * inverse, 0f, 1f);
             image.B[i] = Math.Clamp((image.B[i] - (1f - a)) * inverse, 0f, 1f);
         }
+    }
+}
+
+/// <summary>State a band-by-band merged image decode keeps: RLE channel offsets and the open ZIP streams.</summary>
+internal sealed class MergedImageBands : IDisposable
+{
+    public long[]? RleStarts { get; set; }
+
+    private readonly Dictionary<int, ZipRowReader> _zip = [];
+
+    /// <summary>The ZIP stream of one channel (channels decode one after another, never concurrently).</summary>
+    public ZipRowReader Zip(int channel)
+    {
+        if (!_zip.TryGetValue(channel, out var reader))
+        {
+            reader = new ZipRowReader();
+            _zip[channel] = reader;
+        }
+
+        return reader;
+    }
+
+    public void Dispose()
+    {
+        foreach (var reader in _zip.Values)
+        {
+            reader.Dispose();
+        }
+
+        _zip.Clear();
     }
 }

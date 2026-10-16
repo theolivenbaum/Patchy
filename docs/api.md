@@ -37,9 +37,13 @@ Layers with only Photoshop 5 effects (`lrFX`, no `lfx2`, `lfxs` or `lmfx`) get t
 
 `CompStates` is the layer comp state (`cmls/layerSettings`), one `PsdLayerCompState` per entry: `CompIds` (the comp IDs of resource 1065 it applies to; ID 0 is the document state Photoshop keeps beside the comps), `Visible`, `Offset` (pixels from the saved position), `VectorMaskOffset`, `EffectsReferencePoint`, `BlendMode`, `Opacity` and `FillOpacity` (0 to 1), `Effects` (the comp's effects descriptor, `lfx2` layout) and the raw `Descriptor`. A null value means the comp does not change that property. `GetCompState(compId)` finds a comp's entry; `CompLayerId` and `OriginalEffectsReferencePoint` are `LyrI` and `origFXRefPoint`. Checked against psd-tools' `layer_comps.psd`: the last applied comp's visibility equals every layer's saved visibility, and the "Scary" comp hides one shape and moves both eye groups 9 px right. Applying a comp when rendering is not implemented.
 
+## Band rendering
+
+`PsdDocument.RenderBands(options)` yields `RenderBand` values (`Top`, and an `Image` as wide as the document) top to bottom, rendering each when the enumeration reaches it; `RenderOptions.BandHeight` sets the rows per band (0 picks about four million pixels). `RenderToPng(stream)` and `RenderToPng(path)` stream the bands into a PNG. The pixels equal `Render`'s, and `Render` itself throws `PsdFormatException` for documents whose canvas does not fit one array. What still works on its whole extent is listed in `docs/performance.md`.
+
 ## Command line
 
-`psdtool info file.psd --resources` prints the typed resources; `--effects` prints each layer's effects under it, marking Photoshop 5 styles, and `--metadata` its layer time and comp states. `psdtool text` adds the path segments and text range of type on a path.
+`psdtool info file.psd --resources` prints the typed resources; `--effects` prints each layer's effects under it, marking Photoshop 5 styles, and `--metadata` its layer time and comp states. `psdtool text` adds the path segments and text range of type on a path. `psdtool render file.psb out.png --bands ROWS` renders through `RenderToPng` (`ROWS` 0 picks the band height).
 
 ## Packages
 

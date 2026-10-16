@@ -7,6 +7,8 @@ How the test suite is organized, which fixtures it uses, and how to run the robu
 - `tests/XRay.Psd.Tests`: the core library. Every committed fixture in `tests/fixtures/psd` is parsed, decoded, truncated and mutated; renders are compared with Photoshop's merged image and reference BMPs (`RenderingTests`); formats without a committed fixture are covered by `Support/PsdBuilder.cs`, which writes synthetic PSD and PSB files.
 - `tests/XRay.Psd.Skia.Tests`: SkiaSharp interop, Skia decoding of the built-in PNG and JPEG output, thumbnail decoding.
 - `DiagnosticsSurvey` (opt-in, `XRAY_PSD_SURVEY=1`): compositor versus merged image versus BMP for every fixture, written to `test-output/survey.txt`.
+- `BandRenderingTests`: band rendering against the whole render for every fixture (and their truncated and mutated copies), and the streamed PNG against `ToPng`.
+- `LargeDocumentTests` (opt-in, `XRAY_PSD_LARGE=1`, about two minutes): a sparse 50000 x 43000 PSB written to the temporary directory, with channels and a merged image past 2 GB, rendered in bands and deleted.
 
 ## Robustness
 
@@ -25,7 +27,7 @@ A 150-iteration run over the small fixtures, a 60-iteration run over all of them
 
 ## Fuzzing with SharpFuzz
 
-The harness runs the same sequence as the mutation test (load, text, resources, styles, both render paths) and treats any exception other than `PsdFormatException` as a crash. It has three modes: libFuzzer (default), AFL (`--afl`), and replay (`XRay.Psd.Fuzz file...`) for reproducing a saved crash without a fuzzer.
+The harness runs the same sequence as the mutation test (load, text, resources, styles, both render paths, band rendering) and treats any exception other than `PsdFormatException` as a crash. It has three modes: libFuzzer (default), AFL (`--afl`), and replay (`XRay.Psd.Fuzz file...`) for reproducing a saved crash without a fuzzer.
 
 One-time setup:
 

@@ -125,7 +125,20 @@ using var mapped = PsdDocument.Load("huge.psb", new PsdLoadOptions { MemoryMap =
 var image = mapped.Render(new RenderOptions { MaxDegreeOfParallelism = 1 });
 ```
 
-Files of 2 GB and more are always memory-mapped and parsed with 64-bit offsets. See `docs/performance.md` for the limits, the parallel model and the benchmarks.
+Large documents render in horizontal bands, holding one band of the canvas at a time. The bands are bit-identical to the same rows of `Render`, and they work past the size one canvas can hold (about 46000 x 46000 pixels, and about 23000 x 23000 for one `RgbaImage`):
+
+```csharp
+// Stream straight into a PNG (RGBA, or RGB when a background or an opaque merged image makes it opaque).
+mapped.RenderToPng("huge.png", new RenderOptions { Source = RenderSource.Layers });
+
+// Or take the bands yourself, top to bottom.
+foreach (var band in mapped.RenderBands(new RenderOptions { BandHeight = 512 }))
+{
+    Consume(band.Top, band.Image); // band.Image is document-wide, band.Image.Height rows
+}
+```
+
+Files of 2 GB and more are always memory-mapped and parsed with 64-bit offsets; channels, the merged image and 16/32-bit layer blocks past 2 GB are read in pieces. See `docs/performance.md` for what band rendering keeps whole, the parallel model and the benchmarks.
 
 Command line:
 
@@ -133,6 +146,7 @@ Command line:
 dotnet run --project tools/XRay.Psd.Cli -- info file.psd --resources --effects --metadata
 dotnet run --project tools/XRay.Psd.Cli -- text file.psd
 dotnet run --project tools/XRay.Psd.Cli -- render file.psd out.png --layers
+dotnet run --project tools/XRay.Psd.Cli -- render huge.psb out.png --bands 0   # band rendering, 0 picks the band height
 ```
 
 ## Building and testing

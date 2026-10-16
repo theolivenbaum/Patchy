@@ -26,6 +26,77 @@ public sealed class LoadingTests
         Assert.Equal(expected.ExtractText().ToString(), windowed.ExtractText().ToString());
     }
 
+    /// <summary>Every committed fixture plus the psd-tools color-mode files (16/32-bit layers live in Lr16/Lr32 blocks there).</summary>
+    public static TheoryData<string> FixturesAndColorModes()
+    {
+        var data = new TheoryData<string>();
+        foreach (var name in Fixtures.AllDocuments())
+        {
+            data.Add(name);
+        }
+
+        foreach (var path in Directory.EnumerateFiles(Fixtures.PsdTools("colormodes"), "*.psd").Order(StringComparer.Ordinal))
+        {
+            data.Add("psd-tools/colormodes/" + Path.GetFileName(path));
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(FixturesAndColorModes))]
+    public void Payloads_past_the_span_limit_decode_from_file_ranges(string name)
+    {
+        // A span limit of 64 bytes makes nearly every channel, the merged image and any
+        // Lr16/Lr32 block take the paths a PSB uses past 2 GB: channels and the merged image
+        // become file ranges read in pieces, and the 16/32-bit layer block parses windowed.
+        var path = name.StartsWith("psd-tools/", StringComparison.Ordinal) ? Fixtures.PsdTools(name["psd-tools/".Length..]) : Fixtures.PathOf(name);
+        var bytes = File.ReadAllBytes(path);
+        var expected = PsdDocument.Load(bytes);
+        var ranged = PsdParser.Parse(new MemorySource(bytes), new PsdLoadOptions(), windowedAbove: 0, spanLimit: 64);
+
+        Assert.Equal(DescribeTree(expected), DescribeTree(ranged));
+        Assert.All(ranged.Layers.SelectMany(l => l.Channels), c => Assert.True(c.Bytes.Length <= 64 ? c.LargeData is null : c.LargeData is not null && c.Data.IsEmpty));
+        Assert.Equal(expected.MergedImageData.Length > 64, !ranged.MergedImage.IsContiguous);
+        if (expected.GlobalTaggedBlocks.FirstOrDefault(b => b.Key is "Lr16" or "Lr32") is { Data.Length: > 64 } deep)
+        {
+            Assert.True(ranged.GetGlobalTaggedBlock(deep.Key)!.Data.IsEmpty);
+            Assert.NotEmpty(ranged.Layers);
+        }
+        for (var i = 0; i < expected.Layers.Count; i++)
+        {
+            var a = expected.Layers[i];
+            var b = ranged.Layers[i];
+            Assert.Equal(a.Channels.Select(c => Hash(c.Data.Span)), b.Channels.Select(c => Hash(ReadAll(c.Bytes))));
+            Assert.Equal(a.GetPixels() is { } pa ? Hash(pa) : "-", b.GetPixels() is { } pb ? Hash(pb) : "-");
+        }
+
+        Assert.Equal(Hash(expected.Render(new RenderOptions { Source = RenderSource.Layers })), Hash(ranged.Render(new RenderOptions { Source = RenderSource.Layers })));
+        Assert.Equal(Hash(expected.GetMergedImage()), Hash(ranged.GetMergedImage()));
+        Assert.Equal(expected.ExtractText().ToString(), ranged.ExtractText().ToString());
+    }
+
+    private static string DescribeTree(PsdDocument document)
+    {
+        var lines = new List<string> { document.ToString(), $"alpha {document.MergedImageHasTransparency}" };
+        foreach (var layer in document.Layers)
+        {
+            lines.Add($"{layer.Path} {layer.Kind} {layer.Bounds} {string.Join(',', layer.Channels.Select(c => c.Id))} {string.Join(',', layer.TaggedBlocks.Select(b => b.Key + b.Data.Length))}");
+        }
+
+        // A 16/32-bit layer block past the span limit is listed without its data.
+        lines.Add(string.Join(',', document.GlobalTaggedBlocks.Select(b => b.Key is "Lr16" or "Lr32" or "Layr" ? b.Key : b.Key + b.Data.Length)));
+        return string.Join('\n', lines);
+    }
+
+    private static byte[] ReadAll(ByteRange range)
+    {
+        using var stream = range.OpenRead();
+        using var copy = new MemoryStream();
+        stream.CopyTo(copy);
+        return copy.ToArray();
+    }
+
     [Theory]
     [InlineData("arrows.psd")]
     [InlineData("photoshop-basic.psb")]

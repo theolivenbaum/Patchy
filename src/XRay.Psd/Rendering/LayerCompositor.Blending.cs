@@ -78,7 +78,7 @@ internal sealed partial class LayerCompositor
             return _canvas;
         }
 
-        var bounds = LayerPixels(layer)?.Bounds ?? default;
+        var bounds = LayerPixels(layer)?.Logical ?? default;
         if (!bounds.IsEmpty && EffectsOf(layer) is { } fx)
         {
             var reach = EffectReach(fx);

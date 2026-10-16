@@ -168,10 +168,13 @@ internal static class EffectMasks
     /// </summary>
     public static void SoftInterior(float[] mask, int width, int height, float size, float choke)
     {
-        for (var i = 0; i < mask.Length; i++)
+        Parallelism.For(mask.Length, 1, (first, last) =>
         {
-            mask[i] = 1f - Math.Clamp(mask[i], 0f, 1f);
-        }
+            for (var i = first; i < last; i++)
+            {
+                mask[i] = 1f - Math.Clamp(mask[i], 0f, 1f);
+            }
+        });
 
         SoftExterior(mask, width, height, size, choke);
     }
@@ -544,36 +547,42 @@ internal static class EffectMasks
         var fineWidth = width * scale;
         var fineHeight = height * scale;
         var fine = new float[fineWidth * fineHeight];
-        for (var fy = 0; fy < fineHeight; fy++)
+        Parallelism.For(fineHeight, fineWidth, (first, last) =>
         {
-            var cy = ((fy + 0.5f) / scale) - 0.5f;
-            var y0 = Math.Clamp((int)MathF.Floor(cy), 0, height - 1);
-            var y1 = Math.Min(y0 + 1, height - 1);
-            var ty = Math.Clamp(cy - y0, 0f, 1f);
-            for (var fx = 0; fx < fineWidth; fx++)
+            for (var fy = first; fy < last; fy++)
             {
-                var cx = ((fx + 0.5f) / scale) - 0.5f;
-                var x0 = Math.Clamp((int)MathF.Floor(cx), 0, width - 1);
-                var x1 = Math.Min(x0 + 1, width - 1);
-                var tx = Math.Clamp(cx - x0, 0f, 1f);
-                var top = matte[(y0 * width) + x0] + ((matte[(y0 * width) + x1] - matte[(y0 * width) + x0]) * tx);
-                var bottom = matte[(y1 * width) + x0] + ((matte[(y1 * width) + x1] - matte[(y1 * width) + x0]) * tx);
-                fine[(fy * fineWidth) + fx] = top + ((bottom - top) * ty) >= 0.5f ? 1f : 0f;
+                var cy = ((fy + 0.5f) / scale) - 0.5f;
+                var y0 = Math.Clamp((int)MathF.Floor(cy), 0, height - 1);
+                var y1 = Math.Min(y0 + 1, height - 1);
+                var ty = Math.Clamp(cy - y0, 0f, 1f);
+                for (var fx = 0; fx < fineWidth; fx++)
+                {
+                    var cx = ((fx + 0.5f) / scale) - 0.5f;
+                    var x0 = Math.Clamp((int)MathF.Floor(cx), 0, width - 1);
+                    var x1 = Math.Min(x0 + 1, width - 1);
+                    var tx = Math.Clamp(cx - x0, 0f, 1f);
+                    var top = matte[(y0 * width) + x0] + ((matte[(y0 * width) + x1] - matte[(y0 * width) + x0]) * tx);
+                    var bottom = matte[(y1 * width) + x0] + ((matte[(y1 * width) + x1] - matte[(y1 * width) + x0]) * tx);
+                    fine[(fy * fineWidth) + fx] = top + ((bottom - top) * ty) >= 0.5f ? 1f : 0f;
+                }
             }
-        }
+        });
 
         const float compensation = 0.5f - (0.5f / scale);
         float[] ReadBack(float[] fineDistance)
         {
             var result = new float[width * height];
-            for (var y = 0; y < height; y++)
+            Parallelism.For(height, width, (first, last) =>
             {
-                for (var x = 0; x < width; x++)
+                for (var y = first; y < last; y++)
                 {
-                    var distance = fineDistance[(((y * scale) + 1) * fineWidth) + (x * scale) + 1];
-                    result[(y * width) + x] = distance <= 0f ? 0f : (distance / scale) + compensation;
+                    for (var x = 0; x < width; x++)
+                    {
+                        var distance = fineDistance[(((y * scale) + 1) * fineWidth) + (x * scale) + 1];
+                        result[(y * width) + x] = distance <= 0f ? 0f : (distance / scale) + compensation;
+                    }
                 }
-            }
+            });
 
             return result;
         }
@@ -593,16 +602,22 @@ internal static class EffectMasks
     public static float[] DistanceField(float[] contour, int width, int height, bool sourcesArePainted)
     {
         var field = new float[contour.Length];
-        for (var i = 0; i < contour.Length; i++)
+        Parallelism.For(contour.Length, 1, (first, last) =>
         {
-            field[i] = (contour[i] > 0f) == sourcesArePainted ? 0f : Unreached;
-        }
+            for (var i = first; i < last; i++)
+            {
+                field[i] = (contour[i] > 0f) == sourcesArePainted ? 0f : Unreached;
+            }
+        });
 
         SquaredDistanceTransform(field, width, height);
-        for (var i = 0; i < field.Length; i++)
+        Parallelism.For(field.Length, 1, (first, last) =>
         {
-            field[i] = MathF.Sqrt(field[i]);
-        }
+            for (var i = first; i < last; i++)
+            {
+                field[i] = MathF.Sqrt(field[i]);
+            }
+        });
 
         return field;
     }

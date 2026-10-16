@@ -25,10 +25,20 @@ internal static class PathRasterizer
     /// Rasterizes a vector path into coverage over <paramref name="rect"/>, combining
     /// subpath groups with their Photoshop operations (Add, Subtract, Intersect, Xor).
     /// </summary>
-    public static float[] RasterizePath(VectorPath path, PsdRect rect)
+    public static float[] RasterizePath(VectorPath path, PsdRect rect) => RasterizePath(path, rect, 0, rect.Height);
+
+    /// <summary>
+    /// Rasterizes rows [<paramref name="firstRow"/>, <paramref name="endRow"/>) of
+    /// <paramref name="rect"/> (relative to its top) into a plane of just those rows. Every
+    /// row comes out bit-identical to the same row of the whole-rect raster: coordinates
+    /// stay relative to <paramref name="rect"/> and rows never read each other.
+    /// </summary>
+    public static float[] RasterizePath(VectorPath path, PsdRect rect, int firstRow, int endRow)
     {
-        var coverage = new float[rect.Width * rect.Height];
-        if (rect.IsEmpty)
+        firstRow = Math.Clamp(firstRow, 0, rect.Height);
+        endRow = Math.Clamp(endRow, firstRow, rect.Height);
+        var coverage = new float[rect.Width * (endRow - firstRow)];
+        if (rect.IsEmpty || coverage.Length == 0)
         {
             return coverage;
         }
@@ -63,7 +73,7 @@ internal static class PathRasterizer
                 }
             }
 
-            var groupCoverage = Rasterize(polygons, rect, evenOdd: true);
+            var groupCoverage = Rasterize(polygons, rect, evenOdd: true, firstRow, endRow);
             if (first)
             {
                 first = false;
@@ -149,11 +159,20 @@ internal static class PathRasterizer
     }
 
     /// <summary>Rasterizes closed polygons (document coordinates) to coverage over <paramref name="rect"/>.</summary>
-    public static float[] Rasterize(List<List<(double X, double Y)>> polygons, PsdRect rect, bool evenOdd)
+    public static float[] Rasterize(List<List<(double X, double Y)>> polygons, PsdRect rect, bool evenOdd) => Rasterize(polygons, rect, evenOdd, 0, rect.Height);
+
+    /// <summary>
+    /// Rasterizes rows [<paramref name="firstRow"/>, <paramref name="endRow"/>) of
+    /// <paramref name="rect"/> into a plane of those rows. Bands of scanlines run in
+    /// parallel; each band rebuilds the active edge list it starts with, which is the
+    /// list a sequential walk holds at that row, so the output does not depend on the split.
+    /// </summary>
+    public static float[] Rasterize(List<List<(double X, double Y)>> polygons, PsdRect rect, bool evenOdd, int firstRow, int endRow)
     {
         var width = rect.Width;
-        var height = rect.Height;
-        var coverage = new float[width * height];
+        firstRow = Math.Clamp(firstRow, 0, rect.Height);
+        endRow = Math.Clamp(endRow, firstRow, rect.Height);
+        var coverage = new float[width * (endRow - firstRow)];
         var edges = new List<Edge>();
         foreach (var polygon in polygons)
         {
@@ -180,12 +199,26 @@ internal static class PathRasterizer
         }
 
         edges.Sort(static (a, b) => a.MinY.CompareTo(b.MinY));
+        Parallelism.For(endRow - firstRow, (long)width * SubSamples, (start, end) =>
+            RasterizeRows(edges, coverage, width, firstRow, firstRow + start, firstRow + end, evenOdd));
+        return coverage;
+    }
+
+    /// <summary>
+    /// Scanlines [<paramref name="first"/>, <paramref name="last"/>) (rect-relative) into
+    /// <paramref name="coverage"/>, whose first row is <paramref name="outputTop"/>. The
+    /// active list starts empty and the first row activates every edge that starts above
+    /// its bottom and drops those that end above its top: the same list, in the same order,
+    /// as a walk from row 0.
+    /// </summary>
+    private static void RasterizeRows(List<Edge> edges, float[] coverage, int width, int outputTop, int first, int last, bool evenOdd)
+    {
         var active = new List<Edge>();
         var crossings = new List<(double X, int Direction)>();
         var accumulation = new float[width + 1];
         var nextEdge = 0;
         const float sampleWeight = 1f / SubSamples;
-        for (var y = 0; y < height; y++)
+        for (var y = first; y < last; y++)
         {
             var rowTop = (double)y;
             var rowBottom = rowTop + 1;
@@ -208,7 +241,7 @@ internal static class PathRasterizer
             }
 
             Array.Clear(accumulation);
-            var row = coverage.AsSpan(y * width, width);
+            var row = coverage.AsSpan((y - outputTop) * width, width);
             var touched = false;
             for (var s = 0; s < SubSamples; s++)
             {
@@ -282,6 +315,5 @@ internal static class PathRasterizer
             }
         }
 
-        return coverage;
     }
 }

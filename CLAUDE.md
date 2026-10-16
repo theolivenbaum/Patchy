@@ -16,7 +16,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | Path | What |
 |---|---|
 | `src/XRay.Psd/` | Core library, no package dependencies |
-| `src/XRay.Psd/IO/` | `BigEndianReader` (bounds-checked cursor), `ChannelCodec` (raw, PackBits RLE, ZIP, ZIP-with-prediction; SIMD sample conversion), `PsdSource` (in-memory or memory-mapped file with 64-bit offsets), `StreamLoader` |
+| `src/XRay.Psd/IO/` | `BigEndianReader` (bounds-checked cursor), `ChannelCodec` (raw, PackBits RLE, ZIP, ZIP-with-prediction; SIMD sample conversion), `PsdSource` (in-memory or memory-mapped file with 64-bit offsets), `ByteRange` (payloads past 2 GB, read in windows), `ZipRowReader`/`ChannelReaders` (ZIP streams kept open between bands), `StreamLoader` |
 | `src/XRay.Psd/Parallelism.cs` | `Parallelism.For`: deterministic row-strip loops, degree from `RenderOptions.MaxDegreeOfParallelism`; see `docs/performance.md` |
 | `src/XRay.Psd/PsdParser.cs` | The five file sections, layer records, mask data, tagged blocks, group tree, `lnk2` linked files |
 | `src/XRay.Psd/Layers/` | `PsdLayer`, `LayerMask`, `VectorPath` (path records to pixel coordinates), `VectorStrokeStyle` (`vstk`), `PsdLayerStyle` (public effects view over `Rendering/LayerEffects`), `PsdLayerMetadata` (`shmd`: layer time, per-comp state) |
@@ -24,8 +24,8 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `src/XRay.Psd/Descriptors/` | Action Manager descriptor reader (`Objc`, `VlLs`, `UntF`, `tdta`, `obj `...) |
 | `src/XRay.Psd/Text/` | `EngineData` parser, `TextLayerInfo` (TySh), `TextEngineBlock` (`Txt2`) and `TextEngineResolver`, `LegacyText` (PS 5 tySh), `TextExtractor`; see `docs/text.md` |
 | `src/XRay.Psd/Imaging/` | `RgbaImage` (public output), `PlanarImage` (internal float planes), `ColorSpaces`, `DocumentColors` (descriptor, text and pattern colors through the pixel transform), `Duotone`; `Icc/` holds the ICC parser, profile-to-sRGB transforms and `IccInkSpace` (sRGB back to CMYK or gray for adjustment layers) |
-| `src/XRay.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Bevel.cs`, `.Strokes.cs`, `.Blending.cs`, `.Knockout.cs`, `.Contours.cs`), SIMD `BlendKernels`/`BlendOps`, `BlendIf`, `SpecialFill`, `MaskSampler`, `PathRasterizer`, `VectorStroker`, `EffectMasks`, `LayerEffects`, `LegacyEffects` (Photoshop 5 `lrFX`), `Gradient`, `GradientNoise`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
-| `src/XRay.Psd/Codecs/` | Built-in `PngEncoder` and baseline `JpegEncoder` |
+| `src/XRay.Psd/Rendering/` | `LayerCompositor` (+ `.Effects.cs`, `.Bevel.cs`, `.Strokes.cs`, `.Blending.cs`, `.Knockout.cs`, `.Contours.cs`, `.Bands.cs` band rendering), SIMD `BlendKernels`/`BlendOps`, `BlendIf`, `SpecialFill`, `MaskSampler`, `PathRasterizer`, `VectorStroker`, `EffectMasks`, `LayerEffects`, `LegacyEffects` (Photoshop 5 `lrFX`), `Gradient`, `GradientNoise`, `Patterns`, `StyleContour`, `Adjustments`, `MergedImageDecoder`, `PsdRenderer` |
+| `src/XRay.Psd/Codecs/` | Built-in `PngEncoder` (+ `.Rows.cs`, the streaming writer behind `RenderToPng`) and baseline `JpegEncoder` |
 | `src/XRay.Psd.Skia/` | Optional SkiaSharp interop (SKBitmap/SKImage, Skia encoders such as WebP) |
 | `src/XRay.Psd.Text/` | Optional type-layer re-rendering (SkiaSharp + HarfBuzz): `IFontResolver` (`FontCollection`, `SystemFontResolver`, aliases), `TextLayoutEngine`, `TextWarpMesh`, `TextLayerRenderer`, `TextLayerRasterizer`; see `docs/text-rendering.md` |
 | `tools/XRay.Psd.Cli/` | `psdtool info|text|render|layers` for inspection and manual checks (`info --resources --effects`) |
@@ -74,6 +74,7 @@ The survey writes `test-output/survey.txt` (layer compositor vs merged image vs 
 - Hot loops are planar float and SIMD: use `System.Numerics.Vector<T>` (or `Vector128/256` where a fixed width fits, as in the JPEG DCT). Blend modes are `IBlendOp`/`IChannelBlend` structs with static abstract members so the JIT emits one specialized loop per mode; do not add per-pixel virtual dispatch or delegates.
 - Determinism: no `Random` or `std`-style distributions in rendering. Dissolve uses the splitmix64 hash of the document coordinate, as in the reference.
 - Parallel loops use `Parallelism.For` (never `Parallel.For`), split only independent items (rows, lines, channels), and must give bit-identical output at every degree; `IAdjustment.Apply` and `CompositeLayerRow` run concurrently on different rows, so they keep no shared mutable state. Add a case to `ParallelismTests` for each new parallel loop.
+- Band rendering (`RenderBands`, `RenderToPng`) must stay bit-identical to `Render` (`BandRenderingTests`). A band render keeps only the band's rows of the canvas and of row-local buffers, and `PlanarImage.Logical` holds a buffer's whole-render bounds: size regions, masks and effect domains from `Logical` (or from layer bounds), loop over `Bounds`, and never blur, dilate or distance-transform a band-clipped buffer. Work that reads across rows belongs to a layer `CollectWholeLayers` marks whole. See `docs/performance.md`.
 - Public API: keep `PsdDocument`, `PsdLayer`, `RgbaImage`, `RenderOptions`, `PsdTextContent` stable; mark new internals `internal`. `PsdBlendMode` is append-only.
 - Tests that need files outside the repository copy them into `local-test-fixtures/` (gitignored) first. Never hardcode machine paths.
 - Commit only verified, finished work with a short subject line. No AI attribution or co-author trailers in commits or pull requests.

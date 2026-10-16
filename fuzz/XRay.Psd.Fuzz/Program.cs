@@ -62,6 +62,10 @@ internal static class Target
             {
                 _ = document.Render();
                 _ = document.Render(new RenderOptions { Source = RenderSource.Layers });
+                foreach (var band in document.RenderBands(new RenderOptions { Source = RenderSource.Layers, BandHeight = 37 }))
+                {
+                    _ = band.Image.Height;
+                }
             }
         }
         catch (PsdFormatException)

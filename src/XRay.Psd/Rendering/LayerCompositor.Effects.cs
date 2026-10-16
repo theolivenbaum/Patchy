@@ -182,11 +182,14 @@ internal sealed partial class LayerCompositor
     /// </summary>
     private static float[] MatteOf(PlanarImage image, PsdRect domain, MaskSampler? layerMask, bool fullAlpha, out bool raised)
     {
-        raised = false;
         var matte = new float[domain.Width * domain.Height];
         var inner = image.Bounds.Intersect(domain);
+        var anyRaised = 0;
+        Parallelism.For(inner.Height, inner.Width, (start, end) =>
+        {
+            var stripRaised = false;
         var row = new float[Math.Max(1, inner.Width)];
-        for (var y = inner.Top; y < inner.Bottom; y++)
+            for (var y = inner.Top + start; y < inner.Top + end; y++)
         {
             var alpha = image.A.AsSpan(image.RowOffset(y, inner.Left), inner.Width);
             var span = row.AsSpan(0, inner.Width);
@@ -200,17 +203,24 @@ internal sealed partial class LayerCompositor
             }
 
             layerMask?.MultiplyRow(y, inner.Left, span);
-            if (fullAlpha && !raised)
+                if (fullAlpha && !stripRaised)
             {
-                for (var i = 0; i < span.Length && !raised; i++)
+                    for (var i = 0; i < span.Length && !stripRaised; i++)
                 {
-                    raised = alpha[i] < 1f && span[i] > 0f;
+                        stripRaised = alpha[i] < 1f && span[i] > 0f;
                 }
             }
 
             span.CopyTo(matte.AsSpan(((y - domain.Top) * domain.Width) + (inner.Left - domain.Left)));
         }
 
+            if (stripRaised)
+            {
+                Volatile.Write(ref anyRaised, 1);
+            }
+        });
+
+        raised = anyRaised != 0;
         return matte;
     }
 
@@ -361,8 +371,18 @@ internal sealed partial class LayerCompositor
             var bandIn = stroke.Position switch { StrokePosition.Outside => 0f, StrokePosition.Center => stroke.Size * 0.5f, _ => stroke.Size };
             var under = new float[styled.Matte.Length];
             var over = new float[styled.Matte.Length];
-            var any = false;
-            for (var i = 0; i < styled.Matte.Length; i++)
+
+            // Rows run in parallel. The knockout plane is allocated up front for a stroke
+            // without Overprint and dropped again when no pixel of it was written.
+            var fresh = knockout is null && !stroke.Overprint;
+            var strokeKnockout = fresh ? Enumerable.Repeat(1f, styled.Matte.Length).ToArray() : knockout;
+            var anyPaint = 0;
+            var anyKnockout = 0;
+            Parallelism.For(height, width, (start, end) =>
+            {
+                var stripAny = false;
+                var knocked = false;
+                for (var i = start * width; i < end * width; i++)
             {
                 var a = Math.Clamp(styled.Matte[i], 0f, 1f);
                 var outBand = bandOut > 0 && outside is not null ? Math.Clamp(bandOut + 1f - outside[i], 0f, 1f) : 0f;
@@ -370,14 +390,31 @@ internal sealed partial class LayerCompositor
                 var innerShare = a * inBand;
                 under[i] = outBand * (1f - innerShare);
                 over[i] = innerShare;
-                any |= under[i] > 0 || over[i] > 0;
+                    stripAny |= under[i] > 0 || over[i] > 0;
                 if (!stroke.Overprint && innerShare > 0)
                 {
-                    knockout ??= Enumerable.Repeat(1f, styled.Matte.Length).ToArray();
-                    knockout[i] *= 1f - innerShare;
+                        strokeKnockout![i] *= 1f - innerShare;
+                        knocked = true;
                 }
             }
 
+                if (stripAny)
+                {
+                    Volatile.Write(ref anyPaint, 1);
+                }
+
+                if (knocked)
+                {
+                    Volatile.Write(ref anyKnockout, 1);
+                }
+            });
+
+            if (!fresh || anyKnockout != 0)
+            {
+                knockout = strokeKnockout;
+            }
+
+            var any = anyPaint != 0;
             if (!any)
             {
                 continue;
@@ -410,8 +447,11 @@ internal sealed partial class LayerCompositor
     {
         var domain = styled.Domain;
         var matte = styled.StrokeEmbossMatte!;
-        var maskRow = styled.Effects.MaskHidesEffects && styled.LayerMask is not null ? new float[domain.Width] : null;
-        for (var y = 0; y < domain.Height; y++)
+        var masked = styled.Effects.MaskHidesEffects && styled.LayerMask is not null;
+        Parallelism.For(domain.Height, domain.Width, (start, end) =>
+        {
+            var maskRow = masked ? new float[domain.Width] : null;
+            for (var y = start; y < end; y++)
         {
             if (maskRow is not null)
             {
@@ -439,6 +479,7 @@ internal sealed partial class LayerCompositor
                 matte[i] = alpha + (matte[i] * (1f - alpha));
             }
         }
+        });
     }
 
     /// <summary>The layer's own pixels with overlays and satin folded in, stroke underlays first.</summary>
@@ -485,6 +526,9 @@ internal sealed partial class LayerCompositor
 
         var gradientBounds = MatteBounds(styled);
         var width = region.Width;
+        var ones = Enumerable.Repeat(1f, width).ToArray();
+        Parallelism.For(region.Height, width * (1L + overlays.Count + satinPlanes.Count), (start, end) =>
+        {
         var alpha = new float[width];
         var r = new float[width];
         var g = new float[width];
@@ -493,8 +537,7 @@ internal sealed partial class LayerCompositor
         var eg = new float[width];
         var eb = new float[width];
         var ea = new float[width];
-        var ones = Enumerable.Repeat(1f, width).ToArray();
-        for (var y = region.Top; y < region.Bottom; y++)
+            for (var y = region.Top + start; y < region.Top + end; y++)
         {
             var s = source.RowOffset(y, region.Left);
             source.R.AsSpan(s, width).CopyTo(r);
@@ -554,6 +597,7 @@ internal sealed partial class LayerCompositor
 
             CompositeLayerRow(target, y, region.Left, mode, r, g, b, alpha, styled.Opacity, styled.Fill, gate, gateBackdrop, clipMode);
         }
+        });
 
         if (!foldSatin || split is not null)
         {
@@ -580,8 +624,10 @@ internal sealed partial class LayerCompositor
         }
 
         var width = region.Width;
+        Parallelism.For(region.Height, width, (start, end) =>
+        {
         var alpha = new float[width];
-        for (var y = region.Top; y < region.Bottom; y++)
+            for (var y = region.Top + start; y < region.Top + end; y++)
         {
             var s = stroke.RowOffset(y, region.Left);
             var row = stroke.A.AsSpan(s, width);
@@ -604,6 +650,7 @@ internal sealed partial class LayerCompositor
 
             CompositeLayerRow(target, y, region.Left, mode, stroke.R.AsSpan(s, width), stroke.G.AsSpan(s, width), stroke.B.AsSpan(s, width), alpha, styled.Opacity, styled.Fill, null, null, clipMode);
         }
+        });
     }
 
     /// <summary>Folds an effect color into straight color rows (destination treated as opaque), with the burn/dodge alpha fold.</summary>
@@ -670,12 +717,14 @@ internal sealed partial class LayerCompositor
         }
 
         var width = region.Width;
+        Parallelism.For(region.Height, width, (start, end) =>
+        {
         var r = new float[width];
         var g = new float[width];
         var b = new float[width];
         var a = new float[width];
         var chainRow = masks is null ? [] : new float[width];
-        for (var y = region.Top; y < region.Bottom; y++)
+            for (var y = region.Top + start; y < region.Top + end; y++)
         {
             plane.Row(y, region.Left, width).CopyTo(a);
             var any = false;
@@ -757,6 +806,7 @@ internal sealed partial class LayerCompositor
 
             BlendKernels.CompositeRow(effectiveMode, r, g, b, a, dr, dg, db, da, clipMode, clipRow);
         }
+        });
     }
 
     /// <summary>Per-pixel paint of a gradient or pattern overlay; null for solid colors (and unresolvable patterns paint nothing).</summary>
@@ -886,7 +936,7 @@ internal sealed partial class LayerCompositor
     /// </summary>
     private void CompositeStyledClipRun(PlanarImage target, PsdLayer layer, PlanarImage source, LayerEffects fx, IReadOnlyList<PsdLayer> members, MaskChain? masks)
     {
-        var content = source.Clone();
+        var content = BandCopy(source);
         CompositeClipMembers(content, members);
 
         var styled = PrepareStyled(layer, source, fx);
@@ -910,7 +960,7 @@ internal sealed partial class LayerCompositor
     /// </summary>
     private void CompositeStyledGroup(PlanarImage target, PsdLayer group, LayerEffects fx, MaskChain? masks, PsdBlendMode mode, bool clipMode, MaskSampler? groupMask, PlanarImage? gateBackdrop = null)
     {
-        var bounds = ContentBounds(group).Intersect(target.Bounds);
+        var bounds = ContentBounds(group).Intersect(target.Logical);
         if (bounds.IsEmpty)
         {
             return;
@@ -988,7 +1038,9 @@ internal sealed partial class LayerCompositor
 
     private static void FadeToward(PlanarImage target, PlanarImage before, PsdRect region, float opacity)
     {
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, region.Width, (start, end) =>
+        {
+            for (var y = region.Top + start; y < region.Top + end; y++)
         {
             var t = target.RowOffset(y, region.Left);
             var b = before.RowOffset(y, region.Left);
@@ -998,6 +1050,7 @@ internal sealed partial class LayerCompositor
                 target.R.AsSpan(t, w), target.G.AsSpan(t, w), target.B.AsSpan(t, w), target.A.AsSpan(t, w),
                 opacity);
         }
+        });
     }
 
     /// <summary>
@@ -1015,11 +1068,14 @@ internal sealed partial class LayerCompositor
     private static void ApplyRange(float[] plane, float range, bool center)
     {
         var gain = 100f / Math.Clamp(range, 1f, 100f);
-        for (var i = 0; i < plane.Length; i++)
+        Parallelism.For(plane.Length, 1, (start, end) =>
+        {
+            for (var i = start; i < end; i++)
         {
             var value = Math.Min(1f, plane[i] * gain);
             plane[i] = center ? 1f - value : value;
         }
+        });
     }
 
     /// <summary>Photoshop's light offset: the effect moves away from the light angle.</summary>
@@ -1036,7 +1092,9 @@ internal sealed partial class LayerCompositor
         var width = domain.Width;
         var height = domain.Height;
         var result = new float[styled.Matte.Length];
-        for (var y = 0; y < height; y++)
+        Parallelism.For(height, width, (start, end) =>
+        {
+            for (var y = start; y < end; y++)
         {
             var sy = y - dy;
             for (var x = 0; x < width; x++)
@@ -1045,6 +1103,7 @@ internal sealed partial class LayerCompositor
                 result[(y * width) + x] = (uint)sx < (uint)width && (uint)sy < (uint)height ? styled.Matte[(sy * width) + sx] : 0f;
             }
         }
+        });
 
         return result;
     }
@@ -1055,10 +1114,13 @@ internal sealed partial class LayerCompositor
         var (dx, dy) = Offset(satin.AngleDegrees, Math.Max(1f, satin.Distance));
         var forward = Shifted(styled, -dx, -dy);
         var backward = Shifted(styled, dx, dy);
-        for (var i = 0; i < forward.Length; i++)
+        Parallelism.For(forward.Length, 1, (start, end) =>
+        {
+            for (var i = start; i < end; i++)
         {
             forward[i] -= backward[i];
         }
+        });
 
         var size = satin.Size;
         if (size > 0)
@@ -1066,11 +1128,14 @@ internal sealed partial class LayerCompositor
             EffectMasks.TentBlur(forward, styled.Domain.Width, styled.Domain.Height, Math.Max(2, (int)MathF.Round(size, MidpointRounding.AwayFromZero)));
         }
 
-        for (var i = 0; i < forward.Length; i++)
+        Parallelism.For(forward.Length, 1, (start, end) =>
+        {
+            for (var i = start; i < end; i++)
         {
             var value = Math.Clamp(Math.Abs(forward[i]), 0f, 1f);
             forward[i] = satin.Invert ? 1f - value : value;
         }
+        });
 
         return new Plane(styled.Domain, forward);
     }
@@ -1080,19 +1145,34 @@ internal sealed partial class LayerCompositor
     {
         var domain = styled.Domain;
         int left = int.MaxValue, top = int.MaxValue, right = int.MinValue, bottom = int.MinValue;
-        for (var y = 0; y < domain.Height; y++)
+
+        // Strips find their own extremes; the integer min/max merge is order-free.
+        var gate = new object();
+        Parallelism.For(domain.Height, domain.Width, (start, end) =>
+        {
+            int stripLeft = int.MaxValue, stripTop = int.MaxValue, stripRight = int.MinValue, stripBottom = int.MinValue;
+            for (var y = start; y < end; y++)
         {
             for (var x = 0; x < domain.Width; x++)
             {
                 if (styled.Matte[(y * domain.Width) + x] > 0)
                 {
-                    left = Math.Min(left, x);
-                    right = Math.Max(right, x);
-                    top = Math.Min(top, y);
-                    bottom = Math.Max(bottom, y);
+                        stripLeft = Math.Min(stripLeft, x);
+                        stripRight = Math.Max(stripRight, x);
+                        stripTop = Math.Min(stripTop, y);
+                        stripBottom = Math.Max(stripBottom, y);
                 }
             }
         }
+
+            lock (gate)
+            {
+                left = Math.Min(left, stripLeft);
+                right = Math.Max(right, stripRight);
+                top = Math.Min(top, stripTop);
+                bottom = Math.Max(bottom, stripBottom);
+            }
+        });
 
         return left > right ? styled.Source.Bounds : new PsdRect(domain.Left + left, domain.Top + top, domain.Left + right + 1, domain.Top + bottom + 1);
     }

@@ -17,7 +17,7 @@ internal static class Cli
                                                       resources, each layer's effects and each layer's
                                                       metadata (layer time, layer comp state) when asked
           psdtool text <file.psd> [--content-only]    Print all text (layer names, type layers, metadata...)
-          psdtool render <file.psd> <out.png|out.jpg> [--layers|--merged] [--quality N] [--background RRGGBB]
+          psdtool render <file.psd> <out.png|out.jpg> [--layers|--merged] [--quality N] [--background RRGGBB] [--bands ROWS]
           psdtool layers <file.psd> <out-dir>         Write each content layer as a PNG
         """;
 
@@ -156,6 +156,7 @@ internal static class Cli
         var source = RenderSource.Auto;
         var quality = 90;
         PsdColor? background = null;
+        int? bands = null;
         for (var i = 0; i < options.Length; i++)
         {
             switch (options[i])
@@ -169,6 +170,9 @@ internal static class Cli
                 case "--quality" when i + 1 < options.Length:
                     quality = int.Parse(options[++i], CultureInfo.InvariantCulture);
                     break;
+                case "--bands" when i + 1 < options.Length:
+                    bands = int.Parse(options[++i], CultureInfo.InvariantCulture);
+                    break;
                 case "--background" when i + 1 < options.Length:
                     var hex = options[++i].TrimStart('#');
                     var value = Convert.ToInt32(hex, 16);
@@ -180,6 +184,19 @@ internal static class Cli
         }
 
         var document = PsdDocument.Load(path);
+        if (bands is { } bandHeight)
+        {
+            // Band rendering streams straight into the PNG, for documents too large for one canvas.
+            if (!output.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            {
+                return Fail("--bands writes PNG only");
+            }
+
+            document.RenderToPng(output, new RenderOptions { Source = source, Background = background, BandHeight = bandHeight });
+            Console.WriteLine($"wrote {output} ({document.Width}x{document.Height}, in bands)");
+            return 0;
+        }
+
         var image = document.Render(new RenderOptions { Source = source, Background = background });
         image.Save(output, quality);
         Console.WriteLine($"wrote {output} ({image.Width}x{image.Height})");

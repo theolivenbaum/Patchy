@@ -76,12 +76,15 @@ internal sealed partial class LayerCompositor
             fillCoverage = new float[image.A.Length];
             fillCoverage.AsSpan().Fill(1f);
             var coverage = MaskSampler.FromVectorMask(path, domain, layer.VectorMaskDensity, 0, domain);
-            for (var y = domain.Top; y < domain.Bottom; y++)
+            Parallelism.For(domain.Height, width, (start, end) =>
+            {
+                for (var y = domain.Top + start; y < domain.Top + end; y++)
             {
                 var o = fill.RowOffset(y, domain.Left);
                 coverage?.MultiplyRow(y, domain.Left, fillCoverage.AsSpan(o, width));
                 BlendKernels.MultiplyInPlace(fill.A.AsSpan(o, width), fillCoverage.AsSpan(o, width));
             }
+            });
 
             fill.R.AsSpan().CopyTo(image.R);
             fill.G.AsSpan().CopyTo(image.G);
@@ -143,17 +146,26 @@ internal sealed partial class LayerCompositor
     /// <summary>Raises <paramref name="alpha"/> to <paramref name="coverage"/>; true when any value rose.</summary>
     private static bool RaiseAlpha(float[] alpha, float[] coverage)
     {
-        var raised = false;
-        for (var i = 0; i < alpha.Length; i++)
+        var raised = 0;
+        Parallelism.For(alpha.Length, 1, (start, end) =>
+        {
+            var stripRaised = false;
+            for (var i = start; i < end; i++)
         {
             if (coverage[i] > alpha[i])
             {
                 alpha[i] = coverage[i];
-                raised = true;
+                    stripRaised = true;
             }
         }
 
-        return raised;
+            if (stripRaised)
+            {
+                Volatile.Write(ref raised, 1);
+            }
+        });
+
+        return raised != 0;
     }
 
     /// <summary>
@@ -179,8 +191,10 @@ internal sealed partial class LayerCompositor
         var mode = stroke.BlendMode is PsdBlendMode.PassThrough or PsdBlendMode.Dissolve ? PsdBlendMode.Normal : stroke.BlendMode;
         var opacity = (float)stroke.Opacity;
         var width = painted.Width;
+        Parallelism.For(painted.Height, width, (start, end) =>
+        {
         var alpha = new float[width];
-        for (var y = painted.Top; y < painted.Bottom; y++)
+            for (var y = painted.Top + start; y < painted.Top + end; y++)
         {
             var s = content.RowOffset(y, painted.Left);
             var c = ((y - rect.Top) * rect.Width) + (painted.Left - rect.Left);
@@ -203,14 +217,18 @@ internal sealed partial class LayerCompositor
                 image.R.AsSpan(t, width), image.G.AsSpan(t, width), image.B.AsSpan(t, width), image.A.AsSpan(t, width),
                 clipMode: false);
         }
+        });
 
         var domainCoverage = new float[image.A.Length];
         var bandWidth = painted.Width;
-        for (var y = painted.Top; y < painted.Bottom; y++)
+        Parallelism.For(painted.Height, bandWidth, (start, end) =>
+        {
+            for (var y = painted.Top + start; y < painted.Top + end; y++)
         {
             coverage.AsSpan(((y - rect.Top) * rect.Width) + (painted.Left - rect.Left), bandWidth)
                 .CopyTo(domainCoverage.AsSpan(image.RowOffset(y, painted.Left), bandWidth));
         }
+        });
 
         return domainCoverage;
     }
@@ -277,24 +295,27 @@ internal sealed partial class LayerCompositor
                     var placement = gradient.AlignWithLayer && alignBounds is { } aligned ? aligned : GradientBox.From(_canvas);
                     var frame = gradient.Frame(placement, GradientSpan.CenterChord);
                     var dither = descriptor.GetBoolean("Dthr");
-                    for (var y = rect.Top; y < rect.Bottom; y++)
+                    Parallelism.For(rect.Height, rect.Width * 4L, (start, end) =>
                     {
-                        for (var x = rect.Left; x < rect.Right; x++)
+                        for (var y = rect.Top + start; y < rect.Top + end; y++)
                         {
-                            var position = frame.Position(x, y);
-                            var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
-                            if (dither)
+                            for (var x = rect.Left; x < rect.Right; x++)
                             {
-                                (r, g, b) = DitherGradientColor(r, g, b, x, y);
-                            }
+                                var position = frame.Position(x, y);
+                                var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
+                                if (dither)
+                                {
+                                    (r, g, b) = DitherGradientColor(r, g, b, x, y);
+                                }
 
-                            var i = pixels.RowOffset(y, x);
-                            pixels.R[i] = r;
-                            pixels.G[i] = g;
-                            pixels.B[i] = b;
-                            pixels.A[i] = gradient.Opacity(position, endpointSmoothing: true);
+                                var i = pixels.RowOffset(y, x);
+                                pixels.R[i] = r;
+                                pixels.G[i] = g;
+                                pixels.B[i] = b;
+                                pixels.A[i] = gradient.Opacity(position, endpointSmoothing: true);
+                            }
                         }
-                    }
+                    });
 
                     return pixels;
                 }
@@ -307,7 +328,9 @@ internal sealed partial class LayerCompositor
                     }
 
                     var sampler = new PatternSampler(tile, placement, layer);
-                    for (var y = rect.Top; y < rect.Bottom; y++)
+                    Parallelism.For(rect.Height, rect.Width * 4L, (start, end) =>
+                    {
+                        for (var y = rect.Top + start; y < rect.Top + end; y++)
                     {
                         for (var x = rect.Left; x < rect.Right; x++)
                         {
@@ -315,6 +338,7 @@ internal sealed partial class LayerCompositor
                             (pixels.R[i], pixels.G[i], pixels.B[i], pixels.A[i]) = sampler.Sample(x, y);
                         }
                     }
+                    });
 
                     return pixels;
                 }
@@ -354,13 +378,16 @@ internal sealed partial class LayerCompositor
     {
         var width = image.Width;
         var height = image.Height;
-        for (var i = 0; i < image.A.Length; i++)
+        Parallelism.For(image.A.Length, 3, (start, end) =>
+        {
+            for (var i = start; i < end; i++)
         {
             var a = image.A[i];
             image.R[i] *= a;
             image.G[i] *= a;
             image.B[i] *= a;
         }
+        });
 
         var scratch = new float[image.A.Length];
         foreach (var plane in new[] { image.R, image.G, image.B, image.A })
@@ -377,7 +404,9 @@ internal sealed partial class LayerCompositor
 
         var cropped = new PlanarImage(clip);
         var cropWidth = clip.Width;
-        for (var y = clip.Top; y < clip.Bottom; y++)
+        Parallelism.For(clip.Height, cropWidth * 4L, (start, end) =>
+        {
+            for (var y = clip.Top + start; y < clip.Top + end; y++)
         {
             var s = image.RowOffset(y, clip.Left);
             var d = cropped.RowOffset(y, clip.Left);
@@ -391,6 +420,7 @@ internal sealed partial class LayerCompositor
                 cropped.A[d + x] = a;
             }
         }
+        });
 
         return cropped;
     }
@@ -402,7 +432,9 @@ internal sealed partial class LayerCompositor
         var lines = horizontal ? height : width;
         var step = horizontal ? 1 : width;
         var inverse = 1f / ((2 * radius) + 1);
-        for (var line = 0; line < lines; line++)
+        Parallelism.For(lines, length + (2L * radius), (first, last) =>
+        {
+            for (var line = first; line < last; line++)
         {
             var baseIndex = horizontal ? line * width : line;
             float At(int index) => source[baseIndex + (Math.Clamp(index, 0, length - 1) * step)];
@@ -418,5 +450,6 @@ internal sealed partial class LayerCompositor
                 sum += At(i + radius + 1) - At(i - radius);
             }
         }
+        });
     }
 }

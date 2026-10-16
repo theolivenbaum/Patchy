@@ -69,10 +69,13 @@ internal sealed partial class LayerCompositor
         {
             var lut = contour.BuildLut();
             var range = Math.Clamp(bevel.ContourRange, 0.01f, 1f);
-            for (var i = 0; i < heightField.Length; i++)
+            Parallelism.For(heightField.Length, 1, (start, end) =>
             {
-                heightField[i] = StyleContour.Sample(lut, Math.Clamp(heightField[i] / range, 0f, 1f), bevel.ContourAntiAliased);
-            }
+                for (var i = start; i < end; i++)
+                {
+                    heightField[i] = StyleContour.Sample(lut, Math.Clamp(heightField[i] / range, 0f, 1f), bevel.ContourAntiAliased);
+                }
+            });
         }
 
         if (bevel.Texture is { } texture && _document.Patterns.TryGetValue(texture.PatternId, out var tile))
@@ -93,96 +96,99 @@ internal sealed partial class LayerCompositor
         var shadows = new float[alpha.Length];
         float At(int x, int y) => (uint)x < (uint)width && (uint)y < (uint)height ? heightField[(y * width) + x] : 0f;
 
-        for (var y = 0; y < height; y++)
+        Parallelism.For(height, width, (start, end) =>
         {
-            for (var x = 0; x < width; x++)
+            for (var y = start; y < end; y++)
             {
-                var index = (y * width) + x;
-                var matte = Math.Clamp(alpha[index], 0f, 1f);
-                var effectAlpha = bevel.Style switch
+                for (var x = 0; x < width; x++)
                 {
-                    BevelStyle.InnerBevel or BevelStyle.StrokeEmboss => matte,
-                    BevelStyle.OuterBevel => 1f - matte,
-                    _ => 1f,
-                };
-                if (effectAlpha <= 0)
-                {
-                    continue;
-                }
-
-                var left = At(x - 1, y);
-                var right = At(x + 1, y);
-                var top = At(x, y - 1);
-                var bottom = At(x, y + 1);
-                var baseX = (left - right) * normalScale;
-                var baseY = (top - bottom) * normalScale;
-                var flat = left == right && top == bottom;
-
-                void Shade(float sign, float weight)
-                {
-                    if (weight <= 0)
+                    var index = (y * width) + x;
+                    var matte = Math.Clamp(alpha[index], 0f, 1f);
+                    var effectAlpha = bevel.Style switch
                     {
-                        return;
+                        BevelStyle.InnerBevel or BevelStyle.StrokeEmboss => matte,
+                        BevelStyle.OuterBevel => 1f - matte,
+                        _ => 1f,
+                    };
+                    if (effectAlpha <= 0)
+                    {
+                        continue;
                     }
 
-                    var gx = baseX * sign;
-                    var gy = baseY * sign;
-                    var length = MathF.Sqrt((gx * gx) + (gy * gy) + 1f);
-                    var raw = (gx * lightX) + (gy * lightY) + lightZ;
-                    var surface = raw / Math.Max(0.0001f, length);
-                    var lighting = Split(surface, lightZ);
-                    if (pillowFamily && raw < lightZ)
-                    {
-                        lighting = -((lightZ - raw) / Math.Max(0.01f, lightZ));
-                    }
+                    var left = At(x - 1, y);
+                    var right = At(x + 1, y);
+                    var top = At(x, y - 1);
+                    var bottom = At(x, y + 1);
+                    var baseX = (left - right) * normalScale;
+                    var baseY = (top - bottom) * normalScale;
+                    var flat = left == right && top == bottom;
 
-                    if (gloss is not null)
+                    void Shade(float sign, float weight)
                     {
-                        if (flat)
+                        if (weight <= 0)
                         {
-                            weight *= matte;
-                            if (weight <= 0)
+                            return;
+                        }
+
+                        var gx = baseX * sign;
+                        var gy = baseY * sign;
+                        var length = MathF.Sqrt((gx * gx) + (gy * gy) + 1f);
+                        var raw = (gx * lightX) + (gy * lightY) + lightZ;
+                        var surface = raw / Math.Max(0.0001f, length);
+                        var lighting = Split(surface, lightZ);
+                        if (pillowFamily && raw < lightZ)
+                        {
+                            lighting = -((lightZ - raw) / Math.Max(0.01f, lightZ));
+                        }
+
+                        if (gloss is not null)
+                        {
+                            if (flat)
                             {
-                                return;
+                                weight *= matte;
+                                if (weight <= 0)
+                                {
+                                    return;
+                                }
+                            }
+
+                            var remapped = StyleContour.Sample(gloss, Math.Clamp(surface, 0f, 1f), bevel.GlossAntiAliased);
+                            lighting = Split(remapped, lightZ);
+                            if (pillowFamily && remapped < lightZ)
+                            {
+                                var remappedRaw = StyleContour.Sample(gloss, Math.Clamp(raw, 0f, 1f), bevel.GlossAntiAliased);
+                                if (remappedRaw < lightZ)
+                                {
+                                    lighting = -((lightZ - remappedRaw) / Math.Max(0.01f, lightZ));
+                                }
                             }
                         }
 
-                        var remapped = StyleContour.Sample(gloss, Math.Clamp(surface, 0f, 1f), bevel.GlossAntiAliased);
-                        lighting = Split(remapped, lightZ);
-                        if (pillowFamily && remapped < lightZ)
+                        if (lighting > 0)
                         {
-                            var remappedRaw = StyleContour.Sample(gloss, Math.Clamp(raw, 0f, 1f), bevel.GlossAntiAliased);
-                            if (remappedRaw < lightZ)
-                            {
-                                lighting = -((lightZ - remappedRaw) / Math.Max(0.01f, lightZ));
-                            }
+                            highlights[index] = Math.Min(1f, highlights[index] + (Math.Min(1f, lighting) * weight));
+                        }
+                        else if (lighting < 0)
+                        {
+                            shadows[index] = Math.Min(1f, shadows[index] + (Math.Min(1f, -lighting) * weight));
                         }
                     }
 
-                    if (lighting > 0)
+                    if (pillow)
                     {
-                        highlights[index] = Math.Min(1f, highlights[index] + (Math.Min(1f, lighting) * weight));
+                        // Both sides shade an anti-aliased edge: the exterior over the backdrop
+                        // fraction, the flipped interior over the content fraction.
+                        var baseSign = bevel.DirectionUp ? -1f : 1f;
+                        Shade(baseSign, effectAlpha * (1f - matte));
+                        Shade(-baseSign, effectAlpha * matte);
                     }
-                    else if (lighting < 0)
+                    else
                     {
-                        shadows[index] = Math.Min(1f, shadows[index] + (Math.Min(1f, -lighting) * weight));
+                        Shade(direction, effectAlpha);
                     }
-                }
-
-                if (pillow)
-                {
-                    // Both sides shade an anti-aliased edge: the exterior over the backdrop
-                    // fraction, the flipped interior over the content fraction.
-                    var baseSign = bevel.DirectionUp ? -1f : 1f;
-                    Shade(baseSign, effectAlpha * (1f - matte));
-                    Shade(-baseSign, effectAlpha * matte);
-                }
-                else
-                {
-                    Shade(direction, effectAlpha);
                 }
             }
-        }
+        });
 
         return (highlights, shadows);
     }
@@ -205,14 +211,18 @@ internal sealed partial class LayerCompositor
         {
             var toPainted = EffectMasks.DistanceField(alpha, width, height, sourcesArePainted: true);
             var toClear = EffectMasks.DistanceField(alpha, width, height, sourcesArePainted: false);
-            field = new float[alpha.Length];
-            for (var i = 0; i < alpha.Length; i++)
+            var roof = new float[alpha.Length];
+            Parallelism.For(alpha.Length, 1, (start, end) =>
             {
-                var a = Math.Clamp(alpha[i], 0f, 1f);
-                var inside = 0.5f + (0.5f * Math.Clamp(toClear[i] / size, 0f, 1f));
-                var outside = 0.5f - (0.5f * Math.Clamp(toPainted[i] / size, 0f, 1f));
-                field[i] = (outside * (1f - a)) + (inside * a);
-            }
+                for (var i = start; i < end; i++)
+                {
+                    var a = Math.Clamp(alpha[i], 0f, 1f);
+                    var inside = 0.5f + (0.5f * Math.Clamp(toClear[i] / size, 0f, 1f));
+                    var outside = 0.5f - (0.5f * Math.Clamp(toPainted[i] / size, 0f, 1f));
+                    roof[i] = (outside * (1f - a)) + (inside * a);
+                }
+            });
+            field = roof;
 
             if (bevel.Technique == BevelTechnique.ChiselSoft)
             {
@@ -225,10 +235,14 @@ internal sealed partial class LayerCompositor
             EffectMasks.LayerStyleBlur(field, width, height, bevel.Soften);
         }
 
-        for (var i = 0; i < field.Length; i++)
+        var clamped = field;
+        Parallelism.For(clamped.Length, 1, (start, end) =>
         {
-            field[i] = Math.Clamp(field[i], 0f, 1f);
-        }
+            for (var i = start; i < end; i++)
+            {
+                clamped[i] = Math.Clamp(clamped[i], 0f, 1f);
+            }
+        });
 
         return field;
     }
@@ -242,22 +256,28 @@ internal sealed partial class LayerCompositor
         var sampler = new PatternSampler(tile, texture, styled.Layer);
         var bump = new float[heightField.Length];
         var domain = styled.Domain;
-        for (var y = 0; y < height; y++)
+        Parallelism.For(height, width, (start, end) =>
         {
-            for (var x = 0; x < width; x++)
+            for (var y = start; y < end; y++)
             {
-                var (r, g, b, _) = sampler.Sample(domain.Left + x, domain.Top + y);
-                var luminance = (MathF.Round(r * 255f) * 299f + MathF.Round(g * 255f) * 590f + MathF.Round(b * 255f) * 111f) / 255000f;
-                bump[(y * width) + x] = bevel.TextureInvert ? luminance - 0.5f : 0.5f - luminance;
+                for (var x = 0; x < width; x++)
+                {
+                    var (r, g, b, _) = sampler.Sample(domain.Left + x, domain.Top + y);
+                    var luminance = (MathF.Round(r * 255f) * 299f + MathF.Round(g * 255f) * 590f + MathF.Round(b * 255f) * 111f) / 255000f;
+                    bump[(y * width) + x] = bevel.TextureInvert ? luminance - 0.5f : 0.5f - luminance;
+                }
             }
-        }
+        });
 
         EffectMasks.BoxBlur(bump, width, height, 1, 1);
         var faceFromMatte = bevel.Style is BevelStyle.InnerBevel or BevelStyle.StrokeEmboss;
-        for (var i = 0; i < heightField.Length; i++)
+        Parallelism.For(heightField.Length, 1, (start, end) =>
         {
-            var coverage = faceFromMatte ? alpha[i] : 1f - Math.Abs((Math.Clamp(heightField[i], 0f, 1f) * 2f) - 1f);
-            heightField[i] += bump[i] * bevel.TextureDepth * Math.Clamp(coverage, 0f, 1f);
-        }
+            for (var i = start; i < end; i++)
+            {
+                var coverage = faceFromMatte ? alpha[i] : 1f - Math.Abs((Math.Clamp(heightField[i], 0f, 1f) * 2f) - 1f);
+                heightField[i] += bump[i] * bevel.TextureDepth * Math.Clamp(coverage, 0f, 1f);
+            }
+        });
     }
 }
