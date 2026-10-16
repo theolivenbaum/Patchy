@@ -102,11 +102,18 @@ public sealed class PsdLayer
     /// <summary>Tagged-block key of the fill or adjustment (<c>SoCo</c>, <c>curv</c>, <c>hue2</c>...).</summary>
     public string? ContentKey { get; internal set; }
 
-    /// <summary>Layer-effects descriptor (<c>lfx2</c>/<c>lmfx</c>), when present.</summary>
+    /// <summary>
+    /// Layer-effects descriptor (<c>lfx2</c>/<c>lfxs</c>/<c>lmfx</c>), when present. A layer
+    /// with only Photoshop 5 effects (<c>lrFX</c>) gets them translated into the same
+    /// shape (<see cref="PsdLayerStyle.IsLegacy"/>).
+    /// </summary>
     public Descriptor? Effects { get; internal set; }
 
     /// <summary>Whether the layer-effects descriptor marks its effects as visible.</summary>
     public bool EffectsVisible { get; internal set; }
+
+    /// <summary>The effects came from the Photoshop 5 <c>lrFX</c> block.</summary>
+    internal bool EffectsAreLegacy { get; set; }
 
     private System.Runtime.CompilerServices.StrongBox<PsdLayerStyle?>? _style;
 

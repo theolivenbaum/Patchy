@@ -834,6 +834,17 @@ internal static class PsdParser
             }
         }
 
+        // Photoshop 5 effects ('lrFX') speak only for layers without a descriptor effects
+        // block: beside lfx2/lfxs/lmfx they are a lossy compatibility mirror that
+        // Photoshop ignores (reference psd_layer_records.cpp).
+        if (layer.GetTaggedBlock("lrFX") is { } lrfx && !blocks.Any(b => b.Key is "lfx2" or "lfxs" or "lmfx")
+            && Rendering.LegacyEffects.ToDescriptor(lrfx.Data, document.Colors) is { } legacy)
+        {
+            layer.Effects = legacy;
+            layer.EffectsVisible = legacy.GetBoolean("masterFXSwitch", true);
+            layer.EffectsAreLegacy = true;
+        }
+
         if (layer.SectionType is PsdSectionType.OpenFolder or PsdSectionType.ClosedFolder)
         {
             layer.Kind = PsdLayerKind.Group;

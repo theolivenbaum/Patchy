@@ -366,7 +366,7 @@ internal static class LegacyText
             case 2 when colors is not null:
                 return colors.FromInk(1 - (c[0] / 65535.0), 1 - (c[1] / 65535.0), 1 - (c[2] / 65535.0), 1 - (c[3] / 65535.0));
             case 0 when colors is not null:
-                return colors.FromRgb(c[0] / 257, c[1] / 257, c[2] / 257);
+                return colors.FromRgb((c[0] + 128) / 257, (c[1] + 128) / 257, (c[2] + 128) / 257);
             case 2:
                 {
                     // Stored inverted: the component is 1 - ink, so RGB = component x (1 - black ink).
@@ -381,7 +381,7 @@ internal static class LegacyText
                 }
 
             default:
-                return new PsdColor((byte)(c[0] / 257), (byte)(c[1] / 257), (byte)(c[2] / 257));
+                return new PsdColor((byte)((c[0] + 128) / 257), (byte)((c[1] + 128) / 257), (byte)((c[2] + 128) / 257));
         }
     }
 }

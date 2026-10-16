@@ -89,6 +89,11 @@ internal static class InfoDetails
             Console.WriteLine($"{indent}effects hidden");
         }
 
+        if (style.IsLegacy)
+        {
+            Console.WriteLine($"{indent}effects from Photoshop 5 (lrFX)");
+        }
+
         foreach (var effect in style.Effects)
         {
             Console.WriteLine($"{indent}fx {effect}");
