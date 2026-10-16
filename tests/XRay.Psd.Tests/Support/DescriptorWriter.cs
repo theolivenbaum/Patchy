@@ -3,7 +3,7 @@ namespace XRay.Psd.Tests.Support;
 /// <summary>
 /// Builds Action Manager descriptors for synthetic tagged blocks. Values are given as
 /// C# objects: <c>bool</c>, <c>int</c> (long), <c>double</c> (doub), <c>string</c> (TEXT),
-/// <see cref="Unit"/>, <see cref="EnumValue"/>, nested <see cref="DescriptorWriter"/>
+/// <see cref="Unit"/>, <see cref="EnumValue"/>, <c>byte[]</c> (tdta), nested <see cref="DescriptorWriter"/>
 /// (Objc) and <c>object[]</c> (VlLs).
 /// </summary>
 internal sealed class DescriptorWriter(string classId)
@@ -99,6 +99,11 @@ internal sealed class DescriptorWriter(string classId)
             case DescriptorWriter nested:
                 writer.Ascii("Objc");
                 nested.Write(writer);
+                break;
+            case byte[] raw:
+                writer.Ascii("tdta");
+                writer.U32((uint)raw.Length);
+                writer.Bytes(raw);
                 break;
             case object[] list:
                 writer.Ascii("VlLs");

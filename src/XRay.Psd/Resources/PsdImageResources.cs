@@ -289,7 +289,8 @@ public sealed class PsdImageResources
                 continue;
             }
 
-            var background = d.GetObject("bgColor");
+            // ESliceBGColorType: None, matte or Clr; only a "Clr " background stores a color.
+            var background = d.GetEnum("bgColorType") is null or "Clr " ? d.GetObject("bgColor") : null;
             slices.Add(new PsdSlice
             {
                 Id = (int)d.GetNumber("sliceID", 0),
@@ -304,12 +305,19 @@ public sealed class PsdImageResources
                 Name = d.GetString("Nm  ") ?? string.Empty,
                 Type = d.GetEnum("Type") == "noImage" ? PsdSliceType.NoImage : PsdSliceType.Image,
                 Bounds = DescriptorRect(d.GetObject("bounds")),
-                Url = d.GetString("url ") ?? string.Empty,
+                // Photoshop writes the URL key as the three-character string "url" (metadata.psd).
+                Url = d.GetString("url") ?? d.GetString("url ") ?? string.Empty,
                 Target = d.GetString("null") ?? string.Empty,
                 Message = d.GetString("Msge") ?? string.Empty,
                 AltTag = d.GetString("altTag") ?? string.Empty,
                 CellTextIsHtml = d.GetBoolean("cellTextIsHTML"),
                 CellText = d.GetString("cellText") ?? string.Empty,
+                HorizontalAlignment = HorizontalAlignment(d.GetEnum("horzAlign")),
+                VerticalAlignment = VerticalAlignment(d.GetEnum("vertAlign")),
+                TopOutset = Int(d, "topOutset"),
+                LeftOutset = Int(d, "leftOutset"),
+                BottomOutset = Int(d, "bottomOutset"),
+                RightOutset = Int(d, "rightOutset"),
                 BackgroundColor = background is null
                     ? PsdColor.Transparent
                     : new PsdColor(Byte(background, "Rd  "), Byte(background, "Grn "), Byte(background, "Bl  "), Byte(background, "alpha")),
@@ -319,6 +327,25 @@ public sealed class PsdImageResources
         return new PsdSlices(version, DescriptorRect(root.GetObject("bounds")), root.GetString("baseName") ?? string.Empty, slices, root);
 
         static byte Byte(Descriptor d, string key) => (byte)Math.Clamp(d.GetNumber(key, 0), 0, 255);
+
+        // ESliceHorzAlign and ESliceVertAlign tokens, numbered like the version 6 integers
+        // (0 default, then left/top, center/middle, right/bottom, baseline).
+        static int HorizontalAlignment(string? value) => value switch
+        {
+            "Left" or "left" or "Lft " => 1,
+            "Cntr" or "center" => 2,
+            "Rght" or "right" => 3,
+            _ => 0,
+        };
+
+        static int VerticalAlignment(string? value) => value switch
+        {
+            "Top " or "top" => 1,
+            "Mddl" or "Cntr" or "middle" or "center" => 2,
+            "Btom" or "bottom" => 3,
+            "Bsln" or "baseline" => 4,
+            _ => 0,
+        };
     }
 
     private static PsdRect DescriptorRect(Descriptor? bounds) => bounds is null

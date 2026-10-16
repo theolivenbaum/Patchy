@@ -17,7 +17,7 @@ public enum PngCompressionLevel
 /// Dependency-free PNG writer (8-bit RGB/RGBA, non-interlaced) with per-row
 /// adaptive filtering (minimum sum of absolute differences).
 /// </summary>
-public static class PngEncoder
+public static partial class PngEncoder
 {
     /// <summary>Filtered data above twice this size deflates in parallel segments of about this size.</summary>
     private const int DeflateSegmentBytes = 1 << 20;
@@ -32,17 +32,7 @@ public static class PngEncoder
         var stride = image.Width * channels;
 
         using var output = new MemoryStream();
-        output.Write(Signature);
-
-        Span<byte> header = stackalloc byte[13];
-        BinaryPrimitives.WriteUInt32BigEndian(header, (uint)image.Width);
-        BinaryPrimitives.WriteUInt32BigEndian(header[4..], (uint)image.Height);
-        header[8] = 8;
-        header[9] = (byte)(withAlpha ? 6 : 2);
-        header[10] = 0;
-        header[11] = 0;
-        header[12] = 0;
-        WriteChunk(output, "IHDR", header);
+        WriteHeader(output, image.Width, image.Height, withAlpha);
 
         // Filter every row in parallel (a row's filter depends only on the raw row and
         // the raw row above), then deflate.
@@ -70,6 +60,21 @@ public static class PngEncoder
         WriteChunk(output, "IDAT", Compress(filtered, filteredStride, level));
         WriteChunk(output, "IEND", []);
         return output.ToArray();
+    }
+
+    /// <summary>The signature and the IHDR chunk of an 8-bit RGB or RGBA image.</summary>
+    private static void WriteHeader(Stream output, int width, int height, bool withAlpha)
+    {
+        output.Write(Signature);
+        Span<byte> header = stackalloc byte[13];
+        BinaryPrimitives.WriteUInt32BigEndian(header, (uint)width);
+        BinaryPrimitives.WriteUInt32BigEndian(header[4..], (uint)height);
+        header[8] = 8;
+        header[9] = (byte)(withAlpha ? 6 : 2);
+        header[10] = 0;
+        header[11] = 0;
+        header[12] = 0;
+        WriteChunk(output, "IHDR", header);
     }
 
     private static void PackRow(RgbaImage image, int y, bool withAlpha, Span<byte> row)
@@ -256,27 +261,70 @@ public static class PngEncoder
     /// the whole input is combined from the per-segment checksums. The output bytes are
     /// the same for every degree of parallelism.
     /// </summary>
-    private static byte[] Compress(byte[] filtered, int filteredStride, PngCompressionLevel level)
+    private static CompressionLevel CompressionOf(PngCompressionLevel level) => level switch
     {
-        var compression = level switch
-        {
-            PngCompressionLevel.Fastest => CompressionLevel.Fastest,
-            PngCompressionLevel.Smallest => CompressionLevel.SmallestSize,
-            _ => CompressionLevel.Optimal,
-        };
+        PngCompressionLevel.Fastest => CompressionLevel.Fastest,
+        PngCompressionLevel.Smallest => CompressionLevel.SmallestSize,
+        _ => CompressionLevel.Optimal,
+    };
 
-        if (filtered.Length <= 2 * DeflateSegmentBytes)
-        {
-            using var single = new MemoryStream();
-            using (var zlib = new ZLibStream(single, compression, leaveOpen: true))
-            {
-                zlib.Write(filtered);
-            }
+    /// <summary>The second zlib header byte for a level (the first is 0x78).</summary>
+    private static byte ZlibFlags(PngCompressionLevel level) => level switch
+    {
+        PngCompressionLevel.Fastest => 0x01,
+        PngCompressionLevel.Smallest => 0xDA,
+        _ => 0x9C,
+    };
 
-            return single.ToArray();
+    /// <summary>Filtered data of this many bytes or fewer deflates as one zlib stream.</summary>
+    private static bool IsSingleStream(long filteredLength) => filteredLength <= 2 * DeflateSegmentBytes;
+
+    /// <summary>Bytes per deflate segment: whole rows of about 1 MiB, fixed by the row size alone.</summary>
+    private static int SegmentBytes(int filteredStride) => Math.Max(1, DeflateSegmentBytes / filteredStride) * filteredStride;
+
+    /// <summary>The filtered rows as one zlib stream (small images).</summary>
+    private static byte[] CompressSingle(ReadOnlySpan<byte> filtered, PngCompressionLevel level)
+    {
+        using var single = new MemoryStream();
+        using (var zlib = new ZLibStream(single, CompressionOf(level), leaveOpen: true))
+        {
+            zlib.Write(filtered);
         }
 
-        var segmentBytes = Math.Max(1, DeflateSegmentBytes / filteredStride) * filteredStride;
+        return single.ToArray();
+    }
+
+    /// <summary>
+    /// One raw deflate segment. Every segment but the last ends with a sync flush and no
+    /// final block, so consecutive segments concatenate into one deflate stream.
+    /// </summary>
+    private static byte[] DeflateSegment(ReadOnlySpan<byte> data, bool last, PngCompressionLevel level)
+    {
+        using var buffer = new MemoryStream();
+        var keep = 0L;
+        using (var deflate = new DeflateStream(buffer, CompressionOf(level), leaveOpen: true))
+        {
+            deflate.Write(data);
+            if (!last)
+            {
+                // Sync flush: byte-aligned output without the final-block bit.
+                // Disposing then appends a final block, which is cut off below.
+                deflate.Flush();
+                keep = buffer.Length;
+            }
+        }
+
+        return last ? buffer.ToArray() : buffer.GetBuffer().AsSpan(0, (int)keep).ToArray();
+    }
+
+    private static byte[] Compress(byte[] filtered, int filteredStride, PngCompressionLevel level)
+    {
+        if (IsSingleStream(filtered.Length))
+        {
+            return CompressSingle(filtered, level);
+        }
+
+        var segmentBytes = SegmentBytes(filteredStride);
         var segmentCount = (filtered.Length + segmentBytes - 1) / segmentBytes;
         var segments = new byte[segmentCount][];
         var checksums = new uint[segmentCount];
@@ -287,22 +335,7 @@ public static class PngEncoder
                 var offset = segment * segmentBytes;
                 var data = filtered.AsSpan(offset, Math.Min(segmentBytes, filtered.Length - offset));
                 checksums[segment] = Adler32.Compute(data);
-                var last = segment == segmentCount - 1;
-                using var buffer = new MemoryStream();
-                var keep = 0L;
-                using (var deflate = new DeflateStream(buffer, compression, leaveOpen: true))
-                {
-                    deflate.Write(data);
-                    if (!last)
-                    {
-                        // Sync flush: byte-aligned output without the final-block bit.
-                        // Disposing then appends a final block, which is cut off below.
-                        deflate.Flush();
-                        keep = buffer.Length;
-                    }
-                }
-
-                segments[segment] = last ? buffer.ToArray() : buffer.GetBuffer().AsSpan(0, (int)keep).ToArray();
+                segments[segment] = DeflateSegment(data, segment == segmentCount - 1, level);
             }
         });
 
@@ -321,12 +354,7 @@ public static class PngEncoder
 
         var result = new byte[total];
         result[0] = 0x78;
-        result[1] = level switch
-        {
-            PngCompressionLevel.Fastest => 0x01,
-            PngCompressionLevel.Smallest => 0xDA,
-            _ => 0x9C,
-        };
+        result[1] = ZlibFlags(level);
         var position = 2;
         foreach (var segment in segments)
         {

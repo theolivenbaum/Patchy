@@ -19,7 +19,9 @@ public sealed class TextRenderSurvey
         // Characters the bundled face lacks (CJK) come from local-test-fixtures/fonts when present.
         using var renderer = new TextLayerRenderer(TestFonts.Settings(localGlyphs: true));
         var report = new StringBuilder();
-        foreach (var name in Fixtures.AllDocuments())
+
+        // Plus ag-psd's type-on-a-path file, the only on-path fixture.
+        foreach (var name in Fixtures.AllDocuments().Append("../ag-psd/text-path.psd"))
         {
             var document = Fixtures.Load(name);
             foreach (var layer in document.EnumerateLayersTopDown().Where(l => l.Text is not null))

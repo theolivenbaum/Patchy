@@ -47,6 +47,13 @@ internal sealed partial class LayerCompositor
 
     private void CompositeList(PlanarImage target, IReadOnlyList<PsdLayer> siblings, MaskChain? masks)
     {
+        var knockout = EnterKnockoutScope(target, siblings);
+        CompositeSiblings(target, siblings, masks, knockout);
+        ExitKnockoutScope(knockout);
+    }
+
+    private void CompositeSiblings(PlanarImage target, IReadOnlyList<PsdLayer> siblings, MaskChain? masks, KnockoutScope? knockout)
+    {
         var index = 0;
         while (index < siblings.Count)
         {
@@ -62,7 +69,8 @@ internal sealed partial class LayerCompositor
 
             if (runEnd == index + 1 || !IsClipBase(layer))
             {
-                CompositeLayer(target, layer, masks, null, clipMode: false);
+                CompositeKnockoutElement(target, layer, knockout, masks, () => CompositeLayer(target, layer, masks, null, clipMode: false));
+                NoteKnockoutBackground(knockout, target, layer);
                 index++;
                 continue;
             }
@@ -86,18 +94,23 @@ internal sealed partial class LayerCompositor
                     members.Add(siblings[member]);
                 }
 
-                WithChannelRestriction(target, baseRestriction, AffectedBounds(layer), () => CompositeStyledClipRun(target, layer, baseSource, baseEffects, members, masks));
+                if (!OutsideBand(target, AffectedBounds(layer)))
+                {
+                    CompositeKnockoutElement(target, layer, knockout, masks, () => WithChannelRestriction(target, baseRestriction, AffectedBounds(layer), () => CompositeStyledClipRun(target, layer, baseSource, baseEffects, members, masks)));
+                }
+
                 index = runEnd;
                 continue;
             }
 
             var runBounds = layer.Kind == PsdLayerKind.Group ? RenderBounds(layer) : AffectedBounds(layer);
-            var bounds = runBounds.Intersect(target.Bounds);
+            var logical = runBounds.Intersect(target.Logical);
+            var bounds = logical.Intersect(target.Bounds);
             if (!bounds.IsEmpty)
             {
                 // A Blend If base keeps the isolated path: its Underlying gate reads the
                 // backdrop outside the buffer, and its ungated alpha stays the clip shape.
-                var group = new PlanarImage(bounds);
+                var group = new PlanarImage(bounds) { Logical = logical };
                 var gateBackdrop = baseGate is { HasUnderlying: true } ? Crop(target, bounds) : null;
                 if (baseGate is not null)
                 {
@@ -105,14 +118,10 @@ internal sealed partial class LayerCompositor
                 }
 
                 CompositeLayer(group, layer, null, PsdBlendMode.Normal, clipMode: false, gateBackdrop, suppressRestriction: true);
-                for (var member = index + 1; member < runEnd; member++)
-                {
-                    CompositeLayer(group, siblings[member], null, null, clipMode: true);
-                }
-
+                CompositeClipMembers(group, siblings.Skip(index + 1).Take(runEnd - index - 1));
                 _clipCoverage.Remove(group);
                 var mode = layer.BlendMode == PsdBlendMode.PassThrough ? PsdBlendMode.Normal : layer.BlendMode;
-                WithChannelRestriction(target, baseRestriction, bounds, () => MergeImage(target, group, mode, 1f, masks, clipMode: false));
+                CompositeKnockoutElement(target, layer, knockout, masks, () => WithChannelRestriction(target, baseRestriction, bounds, () => MergeImage(target, group, mode, 1f, masks, clipMode: false)));
             }
 
             index = runEnd;
@@ -134,7 +143,7 @@ internal sealed partial class LayerCompositor
 
         // All three channels excluded removes the layer, effects included.
         var restriction = RestrictionOf(layer);
-        if (restriction == RestrictAll)
+        if (restriction == RestrictAll || OutsideBand(target, ReachBounds(layer)))
         {
             return;
         }
@@ -164,7 +173,7 @@ internal sealed partial class LayerCompositor
         var mode = modeOverride ?? group.BlendMode;
         var opacity = group.Opacity / 255f;
         var fill = group.FillOpacity / 255f;
-        var groupMask = LayerMasks(group, ContentBounds(group).Intersect(target.Bounds));
+        var groupMask = LayerMasks(group, ContentBounds(group).Intersect(target.Logical), target.Bounds);
         if (EffectsOf(group) is { } effects)
         {
             CompositeStyledGroup(target, group, effects, masks, modeOverride ?? mode, clipMode, groupMask, gateBackdrop);
@@ -176,13 +185,14 @@ internal sealed partial class LayerCompositor
         var gate = BlendIfOf(group);
         if (mode != PsdBlendMode.PassThrough || fill < 1f || modeOverride is not null || gate is not null)
         {
-            var bounds = ContentBounds(group).Intersect(target.Bounds);
+            var logical = ContentBounds(group).Intersect(target.Logical);
+            var bounds = logical.Intersect(target.Bounds);
             if (bounds.IsEmpty)
             {
                 return;
             }
 
-            var isolated = new PlanarImage(bounds);
+            var isolated = new PlanarImage(bounds) { Logical = logical };
             CompositeList(isolated, group.Children, null);
             var merged = mode == PsdBlendMode.PassThrough ? PsdBlendMode.Normal : mode;
             MergeImage(target, isolated, merged, opacity * fill, Chain(masks, groupMask), clipMode, gate, gateBackdrop);
@@ -199,16 +209,7 @@ internal sealed partial class LayerCompositor
         CompositeList(target, group.Children, Chain(masks, groupMask));
         if (before is not null)
         {
-            for (var y = fadeRegion.Top; y < fadeRegion.Bottom; y++)
-            {
-                var t = target.RowOffset(y, fadeRegion.Left);
-                var b = before.RowOffset(y, fadeRegion.Left);
-                var w = fadeRegion.Width;
-                BlendKernels.FadeTowardRow(
-                    before.R.AsSpan(b, w), before.G.AsSpan(b, w), before.B.AsSpan(b, w), before.A.AsSpan(b, w),
-                    target.R.AsSpan(t, w), target.G.AsSpan(t, w), target.B.AsSpan(t, w), target.A.AsSpan(t, w),
-                    opacity);
-            }
+            FadeToward(target, before, fadeRegion, opacity);
         }
     }
 
@@ -220,12 +221,15 @@ internal sealed partial class LayerCompositor
             return;
         }
 
-        var region = source.Bounds.Intersect(target.Bounds);
-        if (region.IsEmpty)
+        // A band render keeps only some rows of the source and target; the region a whole
+        // render would composite decides what runs (styled layers draw effects past it).
+        var logicalRegion = source.Logical.Intersect(target.Logical);
+        if (logicalRegion.IsEmpty)
         {
             return;
         }
 
+        var region = source.Bounds.Intersect(target.Bounds);
         var mode = modeOverride ?? layer.BlendMode;
         if (mode == PsdBlendMode.PassThrough)
         {
@@ -238,7 +242,12 @@ internal sealed partial class LayerCompositor
             return;
         }
 
-        var layerMask = LayerMasks(layer, region);
+        if (region.IsEmpty)
+        {
+            return;
+        }
+
+        var layerMask = LayerMasks(layer, logicalRegion, region);
         var opacity = layer.Opacity / 255f;
         var fill = layer.FillOpacity / 255f;
         var gate = BlendIfOf(layer);
@@ -299,14 +308,14 @@ internal sealed partial class LayerCompositor
 
     private void ApplyAdjustment(PlanarImage target, PsdLayer layer, MaskChain? masks)
     {
-        var adjustment = Adjustments.Create(layer);
+        var adjustment = Adjustments.Create(layer, _options.RenderColorLookup);
         if (adjustment is null)
         {
             return;
         }
 
         var region = target.Bounds;
-        var layerMask = LayerMasks(layer, region);
+        var layerMask = LayerMasks(layer, target.Logical, region);
         var opacity = layer.Opacity / 255f * (layer.FillOpacity / 255f);
         var mode = layer.BlendMode is PsdBlendMode.PassThrough or PsdBlendMode.Dissolve ? PsdBlendMode.Normal : layer.BlendMode;
         var gate = BlendIfOf(layer);
@@ -349,13 +358,20 @@ internal sealed partial class LayerCompositor
 
     private static MaskChain? Chain(MaskChain? chain, MaskSampler? sampler) => sampler is null ? chain : new MaskChain(sampler, chain);
 
-    /// <summary>Combined raster and vector mask of a layer, or null when none applies.</summary>
-    private MaskSampler? LayerMasks(PsdLayer layer, PsdRect region)
+    /// <summary>
+    /// Combined raster and vector mask of a layer over <paramref name="region"/>, or null when
+    /// none applies. <paramref name="rows"/> (default: all of them) bounds the rows a caller
+    /// will sample; a band render passes its band so unfeathered masks decode and rasterize
+    /// only those rows. The raster always follows <paramref name="region"/>, the region of a
+    /// whole render, so every row comes out bit-identical to that render.
+    /// </summary>
+    private MaskSampler? LayerMasks(PsdLayer layer, PsdRect region, PsdRect? rows = null)
     {
+        var (top, bottom) = rows is { } window ? (window.Top, window.Bottom) : (int.MinValue, int.MaxValue);
         MaskSampler? result = null;
         if (layer.Mask is { } mask)
         {
-            result = MaskSampler.FromLayerMask(layer, mask, _canvas);
+            result = BandMask(layer, mask, top, bottom, () => MaskSampler.FromLayerMask(layer, mask, _canvas, top, bottom, _readers));
         }
 
         MaskSampler? vector = null;
@@ -365,7 +381,7 @@ internal sealed partial class LayerCompositor
         }
         else if (layer.RenderedVectorMask is { } rendered)
         {
-            vector = MaskSampler.FromRenderedVectorMask(layer, rendered, _canvas);
+            vector = BandMask(layer, rendered, top, bottom, () => MaskSampler.FromRenderedVectorMask(layer, rendered, _canvas, top, bottom, _readers));
         }
         else if (layer.VectorMask is { } path && !region.IsEmpty)
         {
@@ -374,7 +390,7 @@ internal sealed partial class LayerCompositor
             // past the edge so the blur sees real coverage there.
             var limit = new PsdRect(_canvas.Left - reach, _canvas.Top - reach, _canvas.Right + reach, _canvas.Bottom + reach);
             var vectorRegion = new PsdRect(region.Left - reach, region.Top - reach, region.Right + reach, region.Bottom + reach).Intersect(limit);
-            vector = MaskSampler.FromVectorMask(path, vectorRegion, layer.VectorMaskDensity, layer.VectorMaskFeather, _canvas);
+            vector = BandVectorMask(layer, vectorRegion, top, bottom, () => MaskSampler.FromVectorMask(path, vectorRegion, layer.VectorMaskDensity, layer.VectorMaskFeather, _canvas, top, bottom));
         }
 
         if (vector is null)
@@ -391,23 +407,12 @@ internal sealed partial class LayerCompositor
     /// The compositor keeps every decoded layer for the whole render anyway, so this
     /// changes when decoding happens, not how much memory it holds.
     /// </summary>
-    private void PrefetchPixels()
+    private void PrefetchPixels(HashSet<PsdLayer>? only = null)
     {
         var layers = new List<PsdLayer>();
-        foreach (var layer in _document.Layers)
+        foreach (var layer in ReachableLayers())
         {
-            if (layer.Kind is PsdLayerKind.Group or PsdLayerKind.Adjustment || layer.Bounds.IsEmpty || layer.Opacity == 0 || layer.Channels.Count == 0)
-            {
-                continue;
-            }
-
-            var reachable = true;
-            for (var node = layer; node is not null && reachable; node = node.Parent)
-            {
-                reachable = IsVisible(node);
-            }
-
-            if (reachable)
+            if (only is null || only.Contains(layer))
             {
                 layers.Add(layer);
             }
@@ -451,9 +456,37 @@ internal sealed partial class LayerCompositor
         }
     }
 
+    /// <summary>Content layers with stored channels that the render can reach: visible with visible ancestors, nonzero opacity.</summary>
+    private IEnumerable<PsdLayer> ReachableLayers()
+    {
+        foreach (var layer in _document.Layers)
+        {
+            if (layer.Kind is PsdLayerKind.Group or PsdLayerKind.Adjustment || layer.Bounds.IsEmpty || layer.Opacity == 0 || layer.Channels.Count == 0)
+            {
+                continue;
+            }
+
+            var reachable = true;
+            for (var node = layer; node is not null && reachable; node = node.Parent)
+            {
+                reachable = IsVisible(node);
+            }
+
+            if (reachable)
+            {
+                yield return layer;
+            }
+        }
+    }
+
     /// <summary>Decoded pixels for a content layer, synthesizing solid fills when the layer stores none.</summary>
     private PlanarImage? LayerPixels(PsdLayer layer)
     {
+        if (_window is { } window && !_wholeLayers!.Contains(layer))
+        {
+            return BandPixels(layer, window);
+        }
+
         if (_pixelCache.TryGetValue(layer, out var cached))
         {
             return cached;
@@ -490,10 +523,14 @@ internal sealed partial class LayerCompositor
 
     /// <summary>
     /// Gradient fill layers span the center chord of their shape's bounds when
-    /// aligned (the canvas otherwise), with Photoshop's eased two-stop ramp
-    /// (reference <c>vector_raster.cpp</c>, GdFl branch). The vector mask shapes it later.
+    /// aligned (the canvas otherwise), with Photoshop's eased two-stop ramp and
+    /// dither (reference <c>vector_raster.cpp</c>, GdFl branch, <c>gradient_color_dithered</c>).
+    /// The vector mask shapes it later.
     /// </summary>
-    private PlanarImage? GradientFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor)
+    private PlanarImage? GradientFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor) => GradientFillPixels(layer, descriptor, _canvas);
+
+    /// <summary>The gradient fill over the canvas rows of <paramref name="rows"/> (logical bounds: the canvas).</summary>
+    private PlanarImage? GradientFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor, PsdRect rows)
     {
         var gradient = Gradient.FromDescriptor(descriptor, defaultAngle: 0);
         if (gradient is null)
@@ -501,28 +538,88 @@ internal sealed partial class LayerCompositor
             return null;
         }
 
-        var shape = layer.VectorMask is { Subpaths.Count: > 0 } path ? path.Bounds.Intersect(_canvas) : _canvas;
-        var placement = gradient.AlignWithLayer && !shape.IsEmpty ? shape : _canvas;
-        var pixels = new PlanarImage(_canvas);
-        for (var y = _canvas.Top; y < _canvas.Bottom; y++)
+        var placement = gradient.AlignWithLayer && (PathGradientBounds(layer.VectorMask) ?? MaskGradientBounds(layer.Mask)) is { } shape ? shape : GradientBox.From(_canvas);
+        var frame = gradient.Frame(placement, GradientSpan.CenterChord);
+        var dither = descriptor.GetBoolean("Dthr");
+        var pixels = new PlanarImage(_canvas.Intersect(rows)) { Logical = _canvas };
+        var area = pixels.Bounds;
+        Parallelism.For(area.Height, area.Width * 4L, (start, end) =>
         {
-            for (var x = _canvas.Left; x < _canvas.Right; x++)
+            for (var y = area.Top + start; y < area.Top + end; y++)
             {
-                var position = gradient.Position(placement, x, y, GradientSpan.CenterChord);
-                var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
-                var i = pixels.RowOffset(y, x);
-                pixels.R[i] = r;
-                pixels.G[i] = g;
-                pixels.B[i] = b;
-                pixels.A[i] = gradient.Opacity(position, endpointSmoothing: true);
+                for (var x = area.Left; x < area.Right; x++)
+                {
+                    var position = frame.Position(x, y);
+                    var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
+                    if (dither)
+                    {
+                        (r, g, b) = DitherGradientColor(r, g, b, x, y);
+                    }
+
+                    var i = pixels.RowOffset(y, x);
+                    pixels.R[i] = r;
+                    pixels.G[i] = g;
+                    pixels.B[i] = b;
+                    pixels.A[i] = gradient.Opacity(position, endpointSmoothing: true);
+                }
             }
-        }
+        });
 
         return pixels;
     }
 
+    /// <summary>
+    /// The bounds an aligned gradient fill spans: its path's exact bounds (anchors and
+    /// control points, clipped to the canvas); null without a path. Photoshop measures
+    /// the path itself, not its pixel hull: a 64 px rectangle spans 64 px although its
+    /// edge is stored as 63.99999 (psd-tools' gradient-sizes.psd).
+    /// </summary>
+    private GradientBox? PathGradientBounds(Layers.VectorPath? path)
+    {
+        if (path is not { Subpaths.Count: > 0 })
+        {
+            return null;
+        }
+
+        double left = double.MaxValue, top = double.MaxValue, right = double.MinValue, bottom = double.MinValue;
+        foreach (var subpath in path.Subpaths)
+        {
+            foreach (var k in subpath.Knots)
+            {
+                left = Math.Min(left, Math.Min(k.X, Math.Min(k.InX, k.OutX)));
+                top = Math.Min(top, Math.Min(k.Y, Math.Min(k.InY, k.OutY)));
+                right = Math.Max(right, Math.Max(k.X, Math.Max(k.InX, k.OutX)));
+                bottom = Math.Max(bottom, Math.Max(k.Y, Math.Max(k.InY, k.OutY)));
+            }
+        }
+
+        left = Math.Max(left, _canvas.Left);
+        top = Math.Max(top, _canvas.Top);
+        right = Math.Min(right, _canvas.Right);
+        bottom = Math.Min(bottom, _canvas.Bottom);
+        return right > left && bottom > top ? new GradientBox((float)left, (float)top, (float)(right - left), (float)(bottom - top)) : null;
+    }
+
+    /// <summary>
+    /// Without a path, an aligned gradient fill spans its raster mask's rectangle when the
+    /// mask hides everything outside it (default color 0): psd-tools' 32-bit
+    /// gradient-fill.psd runs its 90 degree ramp over the mask's 94 rows, not the canvas's 150.
+    /// </summary>
+    private GradientBox? MaskGradientBounds(LayerMask? mask)
+    {
+        if (mask is not { Disabled: false, DefaultColor: 0 } || mask.Bounds.Intersect(_canvas) is not { IsEmpty: false } bounds)
+        {
+            return null;
+        }
+
+        return GradientBox.From(bounds);
+    }
+
     /// <summary>Pattern fill layers tile their pattern over the canvas; the vector mask shapes it later.</summary>
-    private PlanarImage? PatternFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor)
+    private PlanarImage? PatternFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor) => PatternFillPixels(layer, descriptor, _canvas);
+
+    /// <summary>The pattern fill over the canvas rows of <paramref name="rows"/> (logical bounds: the canvas).</summary>
+    private PlanarImage? PatternFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor, PsdRect rows)
     {
         if (PatternPlacement.FromDescriptor(descriptor) is not { } placement || !_document.Patterns.TryGetValue(placement.PatternId, out var tile))
         {
@@ -530,15 +627,19 @@ internal sealed partial class LayerCompositor
         }
 
         var sampler = new PatternSampler(tile, placement, layer);
-        var pixels = new PlanarImage(_canvas);
-        for (var y = _canvas.Top; y < _canvas.Bottom; y++)
+        var pixels = new PlanarImage(_canvas.Intersect(rows)) { Logical = _canvas };
+        var area = pixels.Bounds;
+        Parallelism.For(area.Height, area.Width * 4L, (start, end) =>
         {
-            for (var x = _canvas.Left; x < _canvas.Right; x++)
+            for (var y = area.Top + start; y < area.Top + end; y++)
+            {
+                for (var x = area.Left; x < area.Right; x++)
             {
                 var i = pixels.RowOffset(y, x);
                 (pixels.R[i], pixels.G[i], pixels.B[i], pixels.A[i]) = sampler.Sample(x, y);
             }
         }
+        });
 
         return pixels;
     }
@@ -568,7 +669,7 @@ internal sealed partial class LayerCompositor
             return _canvas;
         }
 
-        return LayerPixels(layer)?.Bounds ?? default;
+        return LayerPixels(layer)?.Logical ?? default;
     }
 
     private PsdRect ContentBounds(PsdLayer group)
@@ -614,7 +715,9 @@ internal sealed partial class LayerCompositor
     {
         var copy = new PlanarImage(region);
         var width = region.Width;
-        for (var y = region.Top; y < region.Bottom; y++)
+        Parallelism.For(region.Height, width, (start, end) =>
+        {
+            for (var y = region.Top + start; y < region.Top + end; y++)
         {
             var s = source.RowOffset(y, region.Left);
             var d = copy.RowOffset(y, region.Left);
@@ -623,6 +726,7 @@ internal sealed partial class LayerCompositor
             source.B.AsSpan(s, width).CopyTo(copy.B.AsSpan(d, width));
             source.A.AsSpan(s, width).CopyTo(copy.A.AsSpan(d, width));
         }
+        });
 
         return copy;
     }

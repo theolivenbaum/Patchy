@@ -164,8 +164,15 @@ public sealed class TextLayerInfo
     /// <summary>True for paragraph (box) text, false for point text.</summary>
     public bool IsParagraphText { get; init; }
 
-    /// <summary>Point, box or other (such as type on a path).</summary>
+    /// <summary>Point, box, type on a path, or another shape.</summary>
     public TextShapeKind ShapeKind { get; init; }
+
+    /// <summary>
+    /// The path of type on a path (<see cref="TextShapeKind.Path"/>), from the layer's Txt2 frame.
+    /// Photoshop's TySh record stores such a layer as box text (<c>ShapeType 1</c>, the path's
+    /// extent as <c>BoxBounds</c>); only the Txt2 frame says it follows a path.
+    /// </summary>
+    public TextPath? Path { get; init; }
 
     /// <summary>The raw EngineData <c>ShapeType</c>, when stored.</summary>
     public int? ShapeType { get; init; }
@@ -323,14 +330,16 @@ public sealed class TextLayerInfo
         IReadOnlyList<TextParagraph>? paragraphs = null,
         IReadOnlyList<string>? fonts = null,
         TextEngineObject? textEngineObject = null,
-        TextDataOrigin origin = TextDataOrigin.None) => new()
+        TextDataOrigin origin = TextDataOrigin.None,
+        TextPath? path = null) => new()
         {
             Text = rawText is null ? Text : NormalizeText(rawText),
             RawText = rawText ?? RawText,
             Transform = Transform,
             Orientation = Orientation,
-            IsParagraphText = IsParagraphText,
-            ShapeKind = ShapeKind,
+            IsParagraphText = path is null && IsParagraphText,
+            ShapeKind = path is null ? ShapeKind : TextShapeKind.Path,
+            Path = path ?? Path,
             ShapeType = ShapeType,
             StyleRuns = styleRuns ?? StyleRuns,
             Paragraphs = paragraphs ?? Paragraphs,

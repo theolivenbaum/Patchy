@@ -23,13 +23,22 @@ internal static class ChannelCodec
     };
 
     /// <summary>
+    /// <paramref name="length"/> as an array length, or a <see cref="PsdFormatException"/> when
+    /// one array cannot hold it (a channel too large to decode in one piece; band rendering
+    /// decodes such channels a band at a time).
+    /// </summary>
+    public static int BufferLength(long length) => length <= Array.MaxLength
+        ? (int)Math.Max(0, length)
+        : throw new PsdFormatException($"{length} bytes do not fit one buffer; render large documents in bands (PsdDocument.RenderBands or RenderToPng).");
+
+    /// <summary>
     /// Decodes a layer channel payload whose first two bytes are the compression
     /// method. Returns <c>height * RowBytes(width, depth)</c> big-endian bytes.
     /// </summary>
     public static byte[] DecodeLayerChannel(ReadOnlySpan<byte> payload, int width, int height, int depth, bool large)
     {
         var rowBytes = RowBytes(width, depth);
-        var output = new byte[checked(rowBytes * height)];
+        var output = new byte[BufferLength((long)rowBytes * height)];
         if (width <= 0 || height <= 0 || payload.Length < 2)
         {
             return output;
@@ -72,6 +81,127 @@ internal static class ChannelCodec
     }
 
     /// <summary>
+    /// Decodes rows [<paramref name="first"/>, <paramref name="end"/>) of a layer channel
+    /// payload (compression method first) that may be longer than one span. Every row
+    /// comes out byte for byte as in <see cref="DecodeLayerChannel"/>: raw rows are read at
+    /// their offset, RLE rows through the row-count table (offsets clamped the same way),
+    /// and ZIP streams inflate from the start (or continue through <paramref name="zip"/>,
+    /// which carries one stream from band to band) with prediction undone per row.
+    /// </summary>
+    public static byte[] DecodeLayerChannelRows(ByteRange payload, int width, int height, int depth, bool large, int first, int end, ZipRowReader? zip = null)
+    {
+        var rowBytes = RowBytes(width, depth);
+        first = Math.Clamp(first, 0, Math.Max(0, height));
+        end = Math.Clamp(end, first, Math.Max(0, height));
+        var rows = end - first;
+        var output = new byte[BufferLength((long)rowBytes * rows)];
+        if (width <= 0 || rows <= 0 || payload.Length < 2)
+        {
+            return output;
+        }
+
+        var compression = (PsdCompression)BinaryPrimitives.ReadUInt16BigEndian(payload.Window(0, 2).Span);
+        var data = payload.From(2);
+        switch (compression)
+        {
+            case PsdCompression.Raw:
+                data.Window((long)first * rowBytes, output.Length).Span.CopyTo(output);
+                break;
+            case PsdCompression.Rle:
+                {
+                    var countSize = large ? 4 : 2;
+                    var tableBytes = (long)height * countSize;
+                    if (tableBytes > data.Length)
+                    {
+                        break;
+                    }
+
+                    DecodeRleRows(data, data.From(tableBytes), countSize, rowBytes, first, end, output);
+                    break;
+                }
+
+            case PsdCompression.Zip:
+            case PsdCompression.ZipPrediction:
+                if (zip is not null)
+                {
+                    zip.Read(data, (long)first * rowBytes, output);
+                }
+                else
+                {
+                    InflateRange(data, (long)first * rowBytes, output);
+                }
+
+                if (compression == PsdCompression.ZipPrediction)
+                {
+                    UndoPrediction(output, width, rows, depth);
+                }
+
+                break;
+            default:
+                throw new PsdFormatException($"Unknown channel compression {(int)compression}.");
+        }
+
+        return output;
+    }
+
+    /// <summary>
+    /// RLE rows [<paramref name="first"/>, <paramref name="end"/>) of one channel:
+    /// <paramref name="counts"/> starts with its row-count table, <paramref name="body"/>
+    /// holds its packed rows. Offsets follow <see cref="DecodeRle"/>: each count is cut to
+    /// the bytes that remain.
+    /// </summary>
+    internal static void DecodeRleRows(ByteRange counts, ByteRange body, int countSize, int rowBytes, int first, int end, Span<byte> output)
+    {
+        var bodyLength = body.Length;
+        var offsets = new long[end - first + 1];
+        var offset = 0L;
+        const int tableChunk = 1 << 20;
+        for (var row = 0; row < end; row += tableChunk / countSize)
+        {
+            var chunkRows = Math.Min(tableChunk / countSize, end - row);
+            var table = counts.Window((long)row * countSize, chunkRows * countSize).Span;
+            for (var i = 0; i < chunkRows; i++)
+            {
+                long count = countSize == 4 ? BinaryPrimitives.ReadUInt32BigEndian(table[(i * 4)..]) : BinaryPrimitives.ReadUInt16BigEndian(table[(i * 2)..]);
+                if (row + i >= first)
+                {
+                    offsets[row + i - first] = offset;
+                }
+
+                offset += Math.Min(count, Math.Max(0, bodyLength - offset));
+            }
+        }
+
+        offsets[end - first] = offset;
+
+        // The band's packed rows are one window when they fit; otherwise each row is its own.
+        var start = offsets[0];
+        var span = offset - start;
+        if (span <= int.MaxValue)
+        {
+            var window = body.Window(start, (int)span);
+            var local = new int[offsets.Length];
+            for (var i = 0; i < offsets.Length; i++)
+            {
+                local[i] = (int)(offsets[i] - start);
+            }
+
+            if (window.Length > 0)
+            {
+                UnpackRowsParallel(window.Span, local, end - first, rowBytes, output);
+            }
+
+            return;
+        }
+
+        for (var row = 0; row < end - first; row++)
+        {
+            var length = offsets[row + 1] - offsets[row];
+            _ = UnpackBits(body.Window(offsets[row], (int)Math.Min(length, int.MaxValue)).Span, output.Slice(row * rowBytes, rowBytes));
+        }
+    }
+
+    /// <summary>
     /// Decodes PackBits rows. <paramref name="counts"/> holds one big-endian byte
     /// count per row (u16, or u32 in PSB files).
     /// </summary>
@@ -91,6 +221,12 @@ internal static class ChannelCodec
         }
 
         offsets[rows] = offset;
+        UnpackRowsParallel(data, offsets, rows, rowBytes, output);
+    }
+
+    /// <summary>Unpacks rows whose packed bytes start at <paramref name="offsets"/> (one more entry than rows), in parallel strips.</summary>
+    private static void UnpackRowsParallel(ReadOnlySpan<byte> data, int[] offsets, int rows, int rowBytes, Span<byte> output)
+    {
         if (rows < 2 || Parallelism.StripCount(rows, rowBytes) <= 1)
         {
             UnpackRows(data, offsets, 0, rows, rowBytes, output);
@@ -193,6 +329,23 @@ internal static class ChannelCodec
                 // Keep the rows that inflated before the damage.
             }
         }
+    }
+
+    /// <summary>
+    /// Inflates a zlib stream held in a range of any length, skipping its first
+    /// <paramref name="skip"/> output bytes and filling <paramref name="destination"/> with
+    /// the next ones. Damage keeps what inflated before it, as <see cref="Inflate"/> does.
+    /// </summary>
+    public static void InflateRange(ByteRange source, long skip, Span<byte> destination)
+    {
+        if (source.IsContiguous && skip == 0)
+        {
+            Inflate(source.Memory.Span, destination);
+            return;
+        }
+
+        using var reader = new ZipRowReader();
+        reader.Read(source, skip, destination);
     }
 
     /// <summary>Reverses the ZIP-with-prediction row delta filter in place. Rows are independent and run in parallel.</summary>

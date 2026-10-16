@@ -9,6 +9,17 @@ tests/fixtures/psd-tools/
   Copyright (c) 2019 Kota Yamaguchi. Licensed under the MIT License;
   the full text is in tests/fixtures/psd-tools/LICENSE.
 
+tests/fixtures/ag-psd/
+  text-path.psd is test/read/text-path/src.psd from ag-psd
+  (https://github.com/Agamnentzar/ag-psd), version 31.0.3.
+  Copyright (c) 2016 Agamnentzar. Licensed under the MIT License;
+  the full text is in tests/fixtures/ag-psd/LICENSE.
+
 tests/XRay.Psd.Text.Tests/Fonts/LiberationSans-Regular.ttf
   Liberation Sans, licensed under the SIL Open Font License 1.1;
   the full text is in tests/XRay.Psd.Text.Tests/Fonts/LiberationSans-OFL.txt.
+
+tests/XRay.Psd.Text.Tests/Fonts/Carlito-Regular.ttf
+  Carlito, Copyright 2013 The Carlito Project Authors, licensed under the
+  SIL Open Font License 1.1; the full text is in
+  tests/XRay.Psd.Text.Tests/Fonts/Carlito-OFL.txt.

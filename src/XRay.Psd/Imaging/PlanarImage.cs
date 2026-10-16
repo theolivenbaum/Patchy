@@ -14,14 +14,39 @@ internal sealed class PlanarImage
     public PlanarImage(PsdRect bounds)
     {
         Bounds = bounds;
-        var count = bounds.Width * bounds.Height;
+        var count = PixelCount(bounds);
         R = new float[count];
         G = new float[count];
         B = new float[count];
         A = new float[count];
     }
 
+    /// <summary>
+    /// The pixel count of <paramref name="bounds"/>, or a <see cref="PsdFormatException"/>
+    /// when one float plane cannot hold it (about 46000 x 46000 pixels).
+    /// </summary>
+    internal static int PixelCount(PsdRect bounds)
+    {
+        var count = (long)bounds.Width * bounds.Height;
+        return count <= Array.MaxLength
+            ? (int)count
+            : throw new PsdFormatException($"A {bounds.Width}x{bounds.Height} region does not fit one float plane; render large documents in bands (PsdDocument.RenderBands or RenderToPng).");
+    }
+
     public PsdRect Bounds { get; }
+
+    private readonly PsdRect? _logical;
+
+    /// <summary>
+    /// The bounds this image has in a whole-canvas render. Band rendering keeps only the
+    /// band's rows of a buffer (<see cref="Bounds"/>) but decides everything that depends on
+    /// a buffer's extent (vector mask rasters, group and effect regions) from these.
+    /// </summary>
+    public PsdRect Logical
+    {
+        get => _logical ?? Bounds;
+        init => _logical = value;
+    }
 
     public int Width => Bounds.Width;
 

@@ -108,6 +108,9 @@ public sealed class PsdDocument : IDisposable
 
     internal ReadOnlyMemory<byte> MergedImageData { get; set; }
 
+    /// <summary>The image data section, wherever it lives (a file range past one span on large PSB files).</summary>
+    internal ByteRange MergedImage { get; set; }
+
     internal ReadOnlyMemory<byte> FileData { get; set; }
 
     /// <summary>The memory-mapped file behind the document, released by <see cref="Dispose"/>.</summary>
@@ -156,6 +159,12 @@ public sealed class PsdDocument : IDisposable
     /// <summary>The cached embedded-profile-to-sRGB transform, or null when none applies (built on first use).</summary>
     internal Imaging.Icc.IccSrgbTransform? ColorTransform =>
         LazyInitializer.EnsureInitialized(ref _colorTransform, () => new(ColorManagementEnabled ? Imaging.Icc.IccSrgbTransform.ForDocument(this) : null)).Value;
+
+    private System.Runtime.CompilerServices.StrongBox<Imaging.Icc.IccInkSpace?>? _inkSpace;
+
+    /// <summary>The cached device-channel space the adjustment layers of CMYK, gray and duotone documents run in (built on first use).</summary>
+    internal Imaging.Icc.IccInkSpace? InkSpace =>
+        LazyInitializer.EnsureInitialized(ref _inkSpace, () => new(Imaging.Icc.IccInkSpace.ForDocument(this))).Value;
 
     private DocumentColors? _colors;
 
@@ -302,6 +311,36 @@ public sealed class PsdDocument : IDisposable
 
     /// <summary>Renders the document to 8-bit RGBA. See <see cref="RenderOptions"/> for the source choice.</summary>
     public RgbaImage Render(RenderOptions? options = null) => PsdRenderer.Render(this, options ?? new RenderOptions());
+
+    /// <summary>
+    /// Renders the document in horizontal bands of <see cref="RenderOptions.BandHeight"/> rows,
+    /// top to bottom, each rendered when the sequence reaches it. The bands' pixels are
+    /// identical to the same rows of <see cref="Render"/>, but only one band of the canvas is
+    /// held at a time, so documents too large for <see cref="Render"/> (past about 46000 x 46000
+    /// pixels, or too large for memory) can render. Layers with effects, groups with effects,
+    /// feathered masks, stroked shapes and re-rendered type still work on their whole extent.
+    /// </summary>
+    public IEnumerable<RenderBand> RenderBands(RenderOptions? options = null) => PsdRenderer.RenderBands(this, options ?? new RenderOptions());
+
+    /// <summary>
+    /// Renders the document band by band (<see cref="RenderBands"/>) straight into a PNG
+    /// stream, holding one band and the deflate segments in progress. The image is RGB when it
+    /// is opaque by construction (a <see cref="RenderOptions.Background"/>, or a merged image
+    /// without transparency) and RGBA otherwise. The stream is not disposed.
+    /// </summary>
+    public void RenderToPng(Stream output, RenderOptions? options = null, Codecs.PngCompressionLevel level = Codecs.PngCompressionLevel.Default)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        PsdRenderer.RenderToPng(this, output, options ?? new RenderOptions(), level);
+    }
+
+    /// <summary>Renders the document band by band into a PNG file (see <see cref="RenderToPng(Stream, RenderOptions?, Codecs.PngCompressionLevel)"/>).</summary>
+    public void RenderToPng(string path, RenderOptions? options = null, Codecs.PngCompressionLevel level = Codecs.PngCompressionLevel.Default)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
+        RenderToPng(file, options, level);
+    }
 
     /// <summary>Extracts every piece of text: layer and group names, type-layer content, channel, path and slice names, and text inside embedded smart objects.</summary>
     public PsdTextContent ExtractText(TextExtractionOptions? options = null) => TextExtractor.Extract(this, options ?? new TextExtractionOptions());

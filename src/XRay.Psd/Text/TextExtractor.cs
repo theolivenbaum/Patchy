@@ -189,9 +189,9 @@ internal static class TextExtractor
             }
         }
 
-        if (options.IncludeSlices && document.GetImageResource(ImageResourceIds.Slices) is { } slices)
+        if (options.IncludeSlices)
         {
-            foreach (var (field, value) in SliceText(slices.Data))
+            foreach (var (field, value) in SliceText(document))
             {
                 items.Add(new PsdTextItem(PsdTextKind.Slice, value, prefix + field, null, depth));
             }
@@ -320,63 +320,27 @@ internal static class TextExtractor
         return names;
     }
 
-    private static IEnumerable<(string Field, string Value)> SliceText(ReadOnlyMemory<byte> data)
+    /// <summary>
+    /// Slice text from the typed slices resource (<see cref="Resources.PsdImageResources.Slices"/>):
+    /// the group name (version 6) or base name (versions 7 and 8), then each slice's name, URL,
+    /// message, alt tag and cell text.
+    /// </summary>
+    private static List<(string Field, string Value)> SliceText(PsdDocument document)
     {
         var results = new List<(string, string)>();
-        try
+        if (document.Resources.Slices is not { } slices)
         {
-            var reader = new BigEndianReader(data);
-            var version = reader.ReadUInt32();
-            if (version is 7 or 8)
-            {
-                var descriptor = Descriptor.ReadVersioned(reader);
-                CollectSliceDescriptor(descriptor, results);
-                return results;
-            }
-
-            if (version != 6)
-            {
-                return results;
-            }
-
-            reader.Skip(16); // bounds
-            var groupName = reader.ReadUnicodeString();
-            if (groupName.Length > 0)
-            {
-                results.Add(("slices/group", groupName));
-            }
-
-            var count = reader.ReadUInt32();
-            for (var i = 0u; i < count && reader.Remaining > 0; i++)
-            {
-                _ = reader.ReadUInt32(); // id
-                _ = reader.ReadUInt32(); // group id
-                var origin = reader.ReadUInt32();
-                if (origin == 1)
-                {
-                    _ = reader.ReadUInt32(); // associated layer id
-                }
-
-                var name = reader.ReadUnicodeString();
-                _ = reader.ReadUInt32(); // type
-                reader.Skip(16); // bounds
-                var url = reader.ReadUnicodeString();
-                _ = reader.ReadUnicodeString(); // target
-                var message = reader.ReadUnicodeString();
-                var alt = reader.ReadUnicodeString();
-                _ = reader.ReadByte(); // cell text is HTML
-                var cell = reader.ReadUnicodeString();
-                reader.Skip(4 + 4 + 4); // alignment, alpha/rgb color
-                AddSlice(results, "name", name);
-                AddSlice(results, "url", url);
-                AddSlice(results, "message", message);
-                AddSlice(results, "alt", alt);
-                AddSlice(results, "cellText", cell);
-            }
+            return results;
         }
-        catch (PsdFormatException)
+
+        AddSlice(results, slices.Version == 6 ? "group" : "baseName", slices.GroupName);
+        foreach (var slice in slices.Slices)
         {
-            // Return what decoded.
+            AddSlice(results, "name", slice.Name);
+            AddSlice(results, "url", slice.Url);
+            AddSlice(results, "message", slice.Message);
+            AddSlice(results, "alt", slice.AltTag);
+            AddSlice(results, "cellText", slice.CellText);
         }
 
         return results;
@@ -387,46 +351,6 @@ internal static class TextExtractor
         if (value.Length > 0)
         {
             results.Add(("slices/" + field, value));
-        }
-    }
-
-    private static void CollectSliceDescriptor(Descriptor descriptor, List<(string, string)> results)
-    {
-        foreach (var (key, value) in descriptor.Items)
-        {
-            switch (value.Type)
-            {
-                case DescriptorValueType.String:
-                    var field = key switch
-                    {
-                        "Nm  " => "name",
-                        "url " => "url",
-                        "Msge" => "message",
-                        "altTag" => "alt",
-                        "cellText" => "cellText",
-                        "baseName" => "baseName",
-                        _ => null,
-                    };
-                    if (field is not null)
-                    {
-                        AddSlice(results, field, value.String ?? string.Empty);
-                    }
-
-                    break;
-                case DescriptorValueType.Object when value.Object is not null:
-                    CollectSliceDescriptor(value.Object, results);
-                    break;
-                case DescriptorValueType.List when value.List is not null:
-                    foreach (var item in value.List)
-                    {
-                        if (item.Object is not null)
-                        {
-                            CollectSliceDescriptor(item.Object, results);
-                        }
-                    }
-
-                    break;
-            }
         }
     }
 

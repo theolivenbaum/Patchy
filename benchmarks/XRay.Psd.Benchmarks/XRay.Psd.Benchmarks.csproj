@@ -16,5 +16,6 @@
   <ItemGroup>
     <!-- The synthetic large document is written with the test suite's PSD builder. -->
     <Compile Include="../../tests/XRay.Psd.Tests/Support/PsdBuilder.cs" Link="Support/PsdBuilder.cs" />
+    <Compile Include="../../tests/XRay.Psd.Tests/Support/DescriptorWriter.cs" Link="Support/DescriptorWriter.cs" />
   </ItemGroup>
 </Project>

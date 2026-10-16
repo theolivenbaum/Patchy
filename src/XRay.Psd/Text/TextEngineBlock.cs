@@ -8,16 +8,20 @@ public sealed record TextEngineFont(string PostScriptName, int FontType, string?
 
 /// <summary>A text frame of the Txt2 frame set (<c>/0/8/0[i]</c>): the shape a text object is laid out in.</summary>
 /// <param name="Index">Position in the frame set.</param>
-/// <param name="ShapeKind">Point text, a box, or another frame type (settings key <c>/0</c>: absent or 0 point, 1 box).</param>
+/// <param name="ShapeKind">Point text, a box, type on a path, or another frame type (settings key <c>/0</c>: absent or 0 point, 1 box, 2 path).</param>
 /// <param name="Orientation">Settings key <c>/1</c>: 2 is vertical.</param>
-/// <param name="Points">The frame path as x, y pairs in text space (a box stores each corner four times).</param>
+/// <param name="Points">The frame's Bezier control points as x, y pairs in text space, four per cubic segment (a box stores each side as a straight segment).</param>
 /// <param name="Bounds">The extent of <paramref name="Points"/>, when the frame has a path.</param>
 public sealed record TextEngineFrame(
     int Index,
     TextShapeKind ShapeKind,
     TextOrientation Orientation,
     IReadOnlyList<double> Points,
-    TextBounds? Bounds);
+    TextBounds? Bounds)
+{
+    /// <summary>The decoded path of a type-on-a-path frame (<see cref="TextShapeKind.Path"/>); null for other frames.</summary>
+    public TextPath? Path { get; init; }
+}
 
 /// <summary>
 /// One text object of the Txt2 block (<c>/1/1[i]</c>), addressed by a type
@@ -48,7 +52,11 @@ public sealed class TextEngineObject
     /// <summary>The frame the object is laid out in, when it resolves.</summary>
     public TextEngineFrame? Frame { get; init; }
 
-    /// <summary>Vertical Roman glyphs lie rotated ("Standard Vertical Roman Alignment", model key <c>/10/0</c> = 4).</summary>
+    /// <summary>
+    /// Vertical Roman glyphs lie rotated ("Standard Vertical Roman Alignment"): model key
+    /// <c>/10/0</c> = 4 on a vertical frame. The runs' <see cref="TextStyleRun.BaselineDirection"/>
+    /// (style key 35) says the same per run.
+    /// </summary>
     public bool RotatedRoman { get; init; }
 
     /// <summary>The object's raw tree.</summary>
@@ -152,6 +160,7 @@ public sealed class TextEngineBlock
         {
             null or 0 => TextShapeKind.Point,
             1 => TextShapeKind.Box,
+            2 => TextShapeKind.Path,
             _ => TextShapeKind.Other,
         };
         var orientation = EngineStyles.Integer(settings?["1"]) == 2 ? TextOrientation.Vertical : TextOrientation.Horizontal;
@@ -179,7 +188,10 @@ public sealed class TextEngineBlock
             bounds = new TextBounds(left, top, right, bottom);
         }
 
-        return new TextEngineFrame(index, kind, orientation, points, bounds);
+        return new TextEngineFrame(index, kind, orientation, points, bounds)
+        {
+            Path = kind == TextShapeKind.Path ? TextPath.FromFrame(frame) : null,
+        };
     }
 
     private static TextEngineObject ReadObject(
@@ -257,17 +269,12 @@ public sealed class TextEngineBlock
             start += length;
         }
 
-        // Standard Vertical Roman Alignment is a model setting here and a run setting in TySh.
-        var rotatedRoman = EngineStyles.Integer(model?.Get("10", "0")) == 4;
-        if (rotatedRoman)
-        {
-            for (var i = 0; i < runs.Count; i++)
-            {
-                runs[i] = runs[i] with { BaselineDirection = 2 };
-            }
-        }
-
+        // Model key /10/0 is 4 on the rotated-Roman vertical capture, but also on horizontal
+        // captures (the anchor fixtures, ag-psd's text-path.psd), so it only reports rotated
+        // Roman on vertical frames. The runs carry their own BaselineDirection (style key 35).
         var frameIndex = EngineStyles.Integer(node.Get("1", "0", 0, "0"));
+        var frame = frameIndex is int f && f >= 0 && f < frames.Count ? frames[f] : null;
+        var rotatedRoman = EngineStyles.Integer(model?.Get("10", "0")) == 4 && frame?.Orientation == TextOrientation.Vertical;
         return new TextEngineObject
         {
             Index = index,
@@ -277,7 +284,7 @@ public sealed class TextEngineBlock
             Paragraphs = paragraphs,
             Fonts = TextLayerInfo.DistinctFonts(runs),
             FrameIndex = frameIndex,
-            Frame = frameIndex is int f && f >= 0 && f < frames.Count ? frames[f] : null,
+            Frame = frame,
             RotatedRoman = rotatedRoman,
             Node = node,
         };

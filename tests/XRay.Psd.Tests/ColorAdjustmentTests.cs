@@ -128,6 +128,130 @@ public sealed class ColorAdjustmentTests
         Assert.Null(Adjustments.ParseSelectiveColor(new byte[20]));
     }
 
+    // ---- Color Lookup -------------------------------------------------------------------
+
+    /// <summary>A 2-node lattice swapping red and blue, in .cube order (red fastest).</summary>
+    private const string SwapCube = """
+        # swap red and blue
+        TITLE "swap"
+        LUT_3D_SIZE 2
+        0 0 0
+        0 0 1
+        0 1 0
+        0 1 1
+        1 0 0
+        1 0 1
+        1 1 0
+        1 1 1
+        """;
+
+    [Fact]
+    public void Color_lookup_reads_cube_files()
+    {
+        var swap = Adjustments.ParseLutFile(System.Text.Encoding.ASCII.GetBytes(SwapCube))!;
+        Assert.Equal(2, swap.Size);
+        AssertColor((0f, 0f, 1f), swap.Apply(1f, 0f, 0f));
+        AssertColor((0.75f, 0.5f, 0.25f), swap.Apply(0.25f, 0.5f, 0.75f));
+
+        // A 1D table inverts each channel; DOMAIN_MAX rescales the input.
+        var invert = Adjustments.ParseLutFile("LUT_1D_SIZE 3\nDOMAIN_MAX 2 2 2\n1 1 1\n0.5 0.5 0.5\n0 0 0\n"u8.ToArray(), "LUTFormatCUBE")!;
+        AssertColor((0.75f, 0.5f, 0f), invert.Apply(0.5f, 1f, 3f));
+
+        Assert.Null(Adjustments.ParseLutFile("LUT_3D_SIZE 2\n0 0 0\n"u8.ToArray()));            // rows missing
+        Assert.Null(Adjustments.ParseLutFile("LUT_3D_SIZE 2\n0 0 x\n"u8.ToArray(), "LUTFormatCUBE"));
+        Assert.Null(Adjustments.ParseLutFile("LUT_3D_SIZE 9999\n"u8.ToArray()));
+    }
+
+    [Fact]
+    public void Color_lookup_reads_3dl_and_csp_files()
+    {
+        // .3dl: input positions, then 12-bit rows with blue varying fastest.
+        var rows = new System.Text.StringBuilder("3DMESH\nMesh 0 12\n0 1023\n");
+        for (var r = 0; r < 2; r++)
+        {
+            for (var g = 0; g < 2; g++)
+            {
+                for (var b = 0; b < 2; b++)
+                {
+                    rows.Append($"{b * 4095} {g * 4095} {r * 4095}\n");
+                }
+            }
+        }
+
+        var lattice = Adjustments.ParseLutFile(System.Text.Encoding.ASCII.GetBytes(rows.ToString()), "LUTFormat3DL")!;
+        AssertColor((0f, 0f, 1f), lattice.Apply(1f, 0f, 0f));
+        AssertColor((0.2f, 0.6f, 0.9f), lattice.Apply(0.9f, 0.6f, 0.2f));
+
+        // .csp: pre-LUTs (here doubling the input range) and a red-fastest lattice.
+        var csp = new System.Text.StringBuilder("CSPLUTV100\n3D\n\nBEGIN METADATA\nnote\nEND METADATA\n");
+        for (var c = 0; c < 3; c++)
+        {
+            csp.Append("2\n0 2\n0 1\n");
+        }
+
+        csp.Append("2 2 2\n");
+        foreach (var line in SwapCube.Split('\n').Where(l => l.Length > 0 && char.IsDigit(l[0])))
+        {
+            csp.Append(line).Append('\n');
+        }
+
+        var cineSpace = Adjustments.ParseLutFile(System.Text.Encoding.ASCII.GetBytes(csp.ToString()))!;
+        AssertColor((0.25f, 0f, 0.5f), cineSpace.Apply(1f, 0f, 0.5f));
+        Assert.Null(Adjustments.ParseLutFile("CSPLUTV100\n3D\n2\n0 1\n"u8.ToArray()));
+    }
+
+    [Fact]
+    public void Color_lookup_reads_device_link_and_abstract_profiles()
+    {
+        var link = new IccBuilder { DeviceClass = "link", ColorSpace = "RGB ", Pcs = "RGB " }
+            .Add("A2B0", IccBuilder.Lut(true, 3, 3, 2, node => [1 - node[0], 1 - node[1], 1 - node[2]]))
+            .Build();
+        var inverted = Adjustments.ColorLookupFromProfile(link)!;
+        AssertColor((0.8f, 0.5f, 0.1f), inverted.Apply(0.2f, 0.5f, 0.9f));
+
+        // An identity Lab abstract profile leaves colors where they were.
+        var abstractProfile = new IccBuilder { DeviceClass = "abst", ColorSpace = "Lab ", Pcs = "Lab " }
+            .Add("A2B0", IccBuilder.Lut(true, 3, 3, 2, node => [node[0], node[1], node[2]]))
+            .Build();
+        var identity = Adjustments.ColorLookupFromProfile(abstractProfile)!;
+        AssertColor((0.2f, 0.5f, 0.9f), identity.Apply(0.2f, 0.5f, 0.9f), 0.01f);
+
+        // A display profile is not a lookup.
+        Assert.Null(Adjustments.ColorLookupFromProfile(TestProfiles.AdobeRgb()));
+    }
+
+    [Fact]
+    public void Color_lookup_layers_render_only_when_asked()
+    {
+        var descriptor = new DescriptorWriter("null")
+            .Add("lookupType", new DescriptorWriter.EnumValue("colorLookupType", "3DLUT"))
+            .Add("Nm  ", "swap.cube")
+            .Add("Dthr", false)
+            .Add("LUTFormat", new DescriptorWriter.EnumValue("LUTFormatType", "LUTFormatCUBE"))
+            .Add("LUT3DFileData", System.Text.Encoding.ASCII.GetBytes(SwapCube))
+            .Versioned();
+        var payload = new PsdBuilder.Writer();
+        payload.U16(1);
+        payload.Bytes(descriptor);
+
+        var table = Adjustments.ParseColorLookup(payload.ToArray())!;
+        AssertColor((0f, 0f, 1f), table.Apply(1f, 0f, 0f));
+
+        var document = LoadOver(new PsdColor(200, 100, 50), ("clrL", payload.ToArray()));
+        Assert.Equal(new PsdColor(200, 100, 50), document.Render(new RenderOptions { Source = RenderSource.Layers }).GetPixel(0, 0));
+        Assert.Equal(new PsdColor(50, 100, 200), document.Render(new RenderOptions { Source = RenderSource.Layers, RenderColorLookup = true }).GetPixel(0, 0));
+
+        // psd-tools' color-lookup.psd: version 1 and an empty descriptor, so nothing to apply.
+        Assert.Null(Adjustments.ParseColorLookup(Convert.FromHexString("000100000010000000010000000000006E756C6C00000000")));
+    }
+
+    private static void AssertColor((float R, float G, float B) expected, (float R, float G, float B) actual, float tolerance = 1e-4f)
+    {
+        Assert.True(
+            Math.Abs(expected.R - actual.R) <= tolerance && Math.Abs(expected.G - actual.G) <= tolerance && Math.Abs(expected.B - actual.B) <= tolerance,
+            $"expected {expected}, got {actual}");
+    }
+
     // ---- Gradient Map -------------------------------------------------------------------
 
     [Fact]
@@ -383,7 +507,10 @@ public sealed class ColorAdjustmentTests
         }
     }
 
-    private static RgbaImage RenderOver(PsdColor color, params (string Key, byte[] Data)[] blocks)
+    private static RgbaImage RenderOver(PsdColor color, params (string Key, byte[] Data)[] blocks) =>
+        LoadOver(color, blocks).Render(new RenderOptions { Source = RenderSource.Layers });
+
+    private static PsdDocument LoadOver(PsdColor color, params (string Key, byte[] Data)[] blocks)
     {
         var builder = new PsdBuilder { Width = 2, Height = 2 };
         var background = new BuilderLayer { Name = "Background", Rect = new PsdRect(0, 0, 2, 2) };
@@ -395,6 +522,6 @@ public sealed class ColorAdjustmentTests
         var adjustment = new BuilderLayer { Name = "Adjustment", Rect = default };
         adjustment.Blocks.AddRange(blocks);
         builder.Layers.Add(adjustment);
-        return PsdDocument.Load(builder.Build()).Render(new RenderOptions { Source = RenderSource.Layers });
+        return PsdDocument.Load(builder.Build());
     }
 }

@@ -5,7 +5,7 @@ namespace XRay.Psd.Text;
 /// keys (<c>/FontSize</c>); the document-level Txt2 block numbers them
 /// (<c>/1</c>). A null key is a property the flavor is not known to store.
 /// Txt2 numbers follow the single-setting captures in
-/// <c>.reference/docs/txt2.md</c> ("Key map").
+/// <c>.reference/docs/txt2.md</c> ("Key map") and the corpus comparison in docs/text.md.
 /// </summary>
 internal sealed class StyleKeys
 {
@@ -51,9 +51,25 @@ internal sealed class StyleKeys
         VerticalScale = "7",
         Tracking = "8",
         BaselineShift = "9",
+
+        // 11 is the kerning method (0 manual, 1 metrics, 2 optical); nonzero reads as auto kerning.
         AutoKerning = "11",
+
+        // The keys below follow the Adobe text engine's style sheet order, which matches all
+        // 89 values of Photoshop's default sheet (/1/2) and ag-psd's engineData2.ts. FontCaps
+        // (SmallCaps 1, masks.psd "sign in") and BaselineDirection (1 and 2, the vertical
+        // fixtures) are confirmed by TySh runs of the same text; FontBaseline, Strikethrough
+        // (15, a position number), Underline (16, a position number), DLigatures and NoBreak
+        // only by matching zero and false values (docs/text.md, "Txt2").
+        FontCaps = "12",
+        FontBaseline = "13",
+        Strikethrough = "15",
+        Underline = "16",
         Ligatures = "18",
+        DLigatures = "19",
+        BaselineDirection = "35",
         Language = "38",
+        NoBreak = "52",
         FillColor = "53",
         StrokeColor = "54",
     };

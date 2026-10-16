@@ -1137,4 +1137,157 @@ public sealed class ColorManagementTests
         AssertNear(image.GetPixel(0, 0), 188, 188, 188);
         AssertNear(image.GetPixel(1, 0), 0, 255, 0);
     }
+
+    // ---- Ink spaces (adjustment layers on the document's channels) -----------------
+
+    [Fact]
+    public void Swop_destination_black_point_matches_lcms()
+    {
+        // cmsDetectDestinationBlackPoint(SWOP, relative colorimetric) through ctypes: the
+        // round trip's mid range is straight, so the input black point stands.
+        var transform = Transform(SwopProfile(), 4);
+        var profile = transform.Profile;
+        var black = IccInkSpace.DestinationBlackPoint(profile, profile.GetBToA(1)!, transform.BlackPoint);
+
+        Assert.Equal(0.021379, black.X, 5);
+        Assert.Equal(0.022173, black.Y, 5);
+        Assert.Equal(0.018290, black.Z, 5);
+    }
+
+    /// <summary>
+    /// sRGB grid nodes (in 32nds) to SWOP inks: lcms 2.19's sRGB to CMYK transform
+    /// (relative colorimetric, black point compensation, TYPE_CMYK_16_REV), the
+    /// reference's <c>build_cmyk_ink_space</c> settings.
+    /// </summary>
+    [Theory]
+    [InlineData(32, 32, 32, 65535, 65535, 65535, 65535)]
+    [InlineData(0, 0, 0, 18171, 21178, 21565, 7613)]
+    [InlineData(16, 16, 16, 32104, 36909, 36843, 60403)]
+    [InlineData(32, 0, 0, 65535, 140, 0, 65535)]
+    [InlineData(0, 32, 0, 24596, 65535, 0, 65535)]
+    [InlineData(0, 0, 32, 8016, 15099, 65535, 65535)]
+    [InlineData(25, 12, 6, 54850, 16915, 2668, 62734)]
+    [InlineData(4, 8, 11, 6289, 19435, 36752, 43262)]
+    [InlineData(20, 28, 5, 38308, 65535, 0, 65535)]
+    public void Srgb_to_swop_inks_matches_lcms(int r, int g, int b, int c, int m, int y, int k)
+    {
+        var transform = Transform(SwopProfile(), 4);
+        var profile = transform.Profile;
+        var lut = profile.GetBToA(1)!;
+        var black = IccInkSpace.DestinationBlackPoint(profile, lut, transform.BlackPoint);
+        Span<double> device = stackalloc double[4];
+        IccInkSpace.SrgbToDevice(profile, lut, black, r / 32.0, g / 32.0, b / 32.0, device);
+
+        int[] expected = [c, m, y, k];
+        for (var channel = 0; channel < 4; channel++)
+        {
+            // Stored convention (65535 = no ink), within two 8-bit levels (black, the steepest corner, is 1.8 off).
+            Assert.InRange((1 - device[channel]) * 65535, expected[channel] - 514, expected[channel] + 514);
+        }
+    }
+
+    [Fact]
+    public void Swop_ink_space_inverts_the_pixel_conversion()
+    {
+        var transform = Transform(SwopProfile(), 4);
+        var space = IccInkSpace.ForCmyk(transform)!;
+        Assert.Equal(4, space.Channels);
+
+        // Inks the profile itself separates (as a Photoshop RGB to CMYK conversion would),
+        // stored as bytes, converted to sRGB as pixels are, then taken back to the inks.
+        var profile = transform.Profile;
+        var lut = profile.GetBToA(1)!;
+        var black = IccInkSpace.DestinationBlackPoint(profile, lut, transform.BlackPoint);
+        Span<double> device = stackalloc double[4];
+        Span<float> ink = stackalloc float[4];
+        var worstColor = 0f;
+        var worstInk = 0f;
+        foreach (var (sr, sg, sb) in new[] { (0.8, 0.6, 0.4), (0.3, 0.7, 0.9), (0.5, 0.5, 0.5), (0.9, 0.2, 0.3), (0.2, 0.25, 0.2), (0.95, 0.9, 0.7) })
+        {
+            IccInkSpace.SrgbToDevice(profile, lut, black, sr, sg, sb, device);
+            var psd = new float[4];
+            for (var c = 0; c < 4; c++)
+            {
+                psd[c] = MathF.Round((float)(1 - device[c]) * 255f) / 255f;
+            }
+
+            Assert.True(transform.ConvertCmyk(psd[0], psd[1], psd[2], psd[3], out var r, out var g, out var b));
+            space.InkFromRgb(r, g, b, ink);
+            Assert.True(transform.ConvertCmyk(ink[0], ink[1], ink[2], ink[3], out var r2, out var g2, out var b2));
+            worstColor = Math.Max(worstColor, Math.Max(Math.Abs(r2 - r), Math.Max(Math.Abs(g2 - g), Math.Abs(b2 - b))));
+            for (var c = 0; c < 4; c++)
+            {
+                worstInk = Math.Max(worstInk, Math.Abs(ink[c] - psd[c]));
+            }
+        }
+
+        Assert.True(worstColor * 255 < 1.5, $"color off by {worstColor * 255:F2} levels");
+        Assert.True(worstInk * 255 < 3, $"inks off by {worstInk * 255:F2} levels");
+    }
+
+    [Fact]
+    public void Gray_ink_space_reads_every_stored_level_back_exactly()
+    {
+        // The real Dot Gain 20% profile Photoshop embedded in psd-tools' levels_grayscale.psd.
+        var document = PsdDocument.Load(Fixtures.PsdTools("adjustments/levels_grayscale.psd"));
+        Assert.Equal("Dot Gain 20%", document.ColorTransform!.Profile.Description);
+        var space = document.InkSpace!;
+        Assert.Equal(1, space.Channels);
+        var planes = new[] { Enumerable.Range(0, 256).Select(v => v / 255f).ToArray() };
+        float[] r = new float[256], g = new float[256], b = new float[256];
+        Assert.True(document.ColorTransform.Apply(planes, 8, r, g, b, 256));
+        for (var level = 0; level < 256; level++)
+        {
+            Assert.Equal(level, space.LevelFromRgb(r[level], g[level], b[level]));
+        }
+
+        // Halfway between two stored levels reads as halfway.
+        Assert.Equal(100.5f, space.LevelFromRgb((r[100] + r[101]) / 2, (g[100] + g[101]) / 2, (b[100] + b[101]) / 2), 2);
+
+        // Photoshop's own sRGB view of a Dot Gain 20% ramp (the reference's pins).
+        foreach (var (gray, srgb) in TestProfiles.DotGain20Pins)
+        {
+            Assert.InRange(r[gray] * 255, srgb - 1.5, srgb + 1.5);
+        }
+    }
+
+    [Fact]
+    public void Documents_get_an_ink_space_by_color_mode()
+    {
+        Assert.Null(Fixtures.Load("photoshop-threshold.psd").InkSpace);
+        Assert.Equal(4, Fixtures.Load(CmykFixture).InkSpace!.Channels);
+
+        // A grayscale document without a profile reads its gray as sRGB: nothing to convert.
+        var builder = new PsdBuilder { Width = 1, Height = 1, Mode = PsdColorMode.Grayscale };
+        builder.MergedChannels.Add(PsdBuilder.Plane8(1, 1, 128));
+        Assert.Null(PsdDocument.Load(builder.Build()).InkSpace);
+    }
+
+    [Fact]
+    public void Duotone_and_gray_adjustments_run_on_the_stored_channel()
+    {
+        // Invert over a red-and-black duotone: the result is the ink mix of the inverted
+        // gray value, not the inverted sRGB mix.
+        byte[] gray = [40, 128, 220];
+        var spec = DuotoneSpec((BlackInk.Item1, BlackInk.Item2, LinearCurve), (RedInk.Item1, RedInk.Item2, LinearCurve));
+        var expected = RenderDuotone(spec, [.. gray.Select(v => (byte)(255 - v))]);
+        var builder = new PsdBuilder { Width = gray.Length, Height = 1, Mode = PsdColorMode.Duotone, ColorModeData = spec };
+        var background = new BuilderLayer { Name = "Background", Rect = new PsdRect(0, 0, gray.Length, 1) };
+        background.Channels[-1] = PsdBuilder.Plane8(gray.Length, 1, 255);
+        background.Channels[0] = gray;
+        builder.Layers.Add(background);
+        var invert = new BuilderLayer { Name = "Invert", Rect = default };
+        invert.Blocks.Add(("nvrt", []));
+        builder.Layers.Add(invert);
+        builder.MergedChannels.Add(gray);
+
+        var document = PsdDocument.Load(builder.Build());
+        Assert.Equal(1, document.InkSpace!.Channels);
+        var rendered = document.Render(new RenderOptions { Source = RenderSource.Layers });
+        for (var x = 0; x < gray.Length; x++)
+        {
+            AssertNear(rendered.GetPixel(x, 0), expected.GetPixel(x, 0).R, expected.GetPixel(x, 0).G, expected.GetPixel(x, 0).B);
+            Assert.NotEqual(255 - document.Render(new RenderOptions { Source = RenderSource.MergedImage }).GetPixel(x, 0).G, rendered.GetPixel(x, 0).G);
+        }
+    }
 }

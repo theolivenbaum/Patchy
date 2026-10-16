@@ -35,13 +35,15 @@ internal static class PsdParser
     /// Parses a file. Files up to <paramref name="windowedAbove"/> bytes are read through
     /// one span; larger ones (PSB files past 2 GB) take the windowed path, which walks
     /// the layer section with 64-bit offsets and gives every channel its own window.
-    /// Tests lower the threshold to run the windowed path on small files.
+    /// On that path a channel, the merged image or a 16/32-bit layer block longer than
+    /// <paramref name="spanLimit"/> bytes is kept as a file range read in pieces.
+    /// Tests lower both limits to run these paths on small files.
     /// </summary>
-    internal static PsdDocument Parse(PsdSource source, PsdLoadOptions options, long windowedAbove = MaxWindow)
+    internal static PsdDocument Parse(PsdSource source, PsdLoadOptions options, long windowedAbove = MaxWindow, long spanLimit = MaxWindow)
     {
         if (source.Length > windowedAbove)
         {
-            return ParseWindowed(source, options);
+            return ParseWindowed(source, options, spanLimit);
         }
 
         var data = source.Slice(0, (int)source.Length);
@@ -55,6 +57,7 @@ internal static class PsdParser
             ReadImageResources(reader, document);
             ReadLayerAndMaskInfo(reader, document, options);
             document.MergedImageData = reader.ReadMemory(reader.Remaining);
+            document.MergedImage = new ByteRange(document.MergedImageData);
             TextEngineResolver.Apply(document);
         }
         catch (PsdFormatException)
@@ -69,7 +72,7 @@ internal static class PsdParser
         return document;
     }
 
-    private static PsdDocument ParseWindowed(PsdSource source, PsdLoadOptions options)
+    private static PsdDocument ParseWindowed(PsdSource source, PsdLoadOptions options, long spanLimit)
     {
         // Header, color mode data and resources come first and are small.
         var head = new BigEndianReader(source.Slice(0, (int)Math.Min(source.Length, MaxWindow)));
@@ -79,10 +82,13 @@ internal static class PsdParser
             ReadHeader(head, document);
             ReadColorModeData(head, document);
             ReadImageResources(head, document);
-            var mergedStart = ReadLayerAndMaskInfoWindowed(source, head.Position, document, options);
+            var mergedStart = ReadLayerAndMaskInfoWindowed(source, head.Position, document, options, spanLimit);
 
-            // The merged image decodes from one window; past 2 GB it is cut there (see docs/performance.md).
-            document.MergedImageData = source.Slice(mergedStart, (int)Math.Min(source.Length - mergedStart, MaxWindow));
+            // The merged image past one span stays a file range that decodes in pieces;
+            // MergedImageData then holds only its first window.
+            var mergedLength = source.Length - mergedStart;
+            document.MergedImageData = source.Slice(mergedStart, (int)Math.Min(mergedLength, MaxWindow));
+            document.MergedImage = mergedLength > spanLimit ? new ByteRange(source, mergedStart, mergedLength) : new ByteRange(document.MergedImageData);
             TextEngineResolver.Apply(document);
         }
         catch (PsdFormatException)
@@ -103,7 +109,7 @@ internal static class PsdParser
     /// window at its file offset, and the global mask info and tagged blocks after the
     /// layer info parse from one more window. Returns the offset of the image data section.
     /// </summary>
-    private static long ReadLayerAndMaskInfoWindowed(PsdSource source, long position, PsdDocument document, PsdLoadOptions options)
+    private static long ReadLayerAndMaskInfoWindowed(PsdSource source, long position, PsdDocument document, PsdLoadOptions options, long spanLimit)
     {
         var large = document.IsLargeDocument;
         var length = ReadLengthAt(source, position, source.Length, large);
@@ -123,7 +129,7 @@ internal static class PsdParser
             var layerInfo = new BigEndianReader(source.Slice(layerInfoStart, (int)Math.Min(layerInfoLength, MaxWindow)));
             if (options.ReadLayers)
             {
-                records = ReadLayerInfo(layerInfo, document, out var mergedAlpha, source, layerInfoStart, layerInfoEnd);
+                records = ReadLayerInfo(layerInfo, document, out var mergedAlpha, source, layerInfoStart, layerInfoEnd, spanLimit);
                 document.MergedImageHasTransparency = mergedAlpha;
             }
             else
@@ -132,9 +138,118 @@ internal static class PsdParser
             }
         }
 
-        var rest = new BigEndianReader(source.Slice(layerInfoEnd, (int)Math.Min(sectionEnd - layerInfoEnd, MaxWindow)));
-        ReadGlobalLayerBlocks(rest, document, options, records);
+        ReadGlobalLayerBlocksWindowed(source, layerInfoEnd, sectionEnd, document, options, records, spanLimit);
         return sectionEnd;
+    }
+
+    /// <summary>
+    /// The global layer mask info and tagged blocks after the layer info, walked with 64-bit
+    /// offsets by the rules of <see cref="ReadTaggedBlocks"/>. A 16/32-bit layer block
+    /// (<c>Lr16</c>, <c>Lr32</c>, <c>Layr</c>) longer than <paramref name="spanLimit"/> parses
+    /// its records from a window at its start with channel data sliced from the file, like
+    /// the layer info itself; it is listed with empty data. Other blocks too long for one
+    /// span are skipped.
+    /// </summary>
+    private static void ReadGlobalLayerBlocksWindowed(PsdSource source, long start, long end, PsdDocument document, PsdLoadOptions options, List<PsdLayer> records, long spanLimit)
+    {
+        var large = document.IsLargeDocument;
+        var position = start;
+        if (end - position >= 4)
+        {
+            var maskLength = new BigEndianReader(source.Slice(position, 4)).ReadUInt32();
+            position += 4;
+            if (maskLength <= end - position)
+            {
+                document.GlobalLayerMaskInfo = maskLength <= MaxWindow ? source.Slice(position, (int)maskLength) : ReadOnlyMemory<byte>.Empty;
+                position += maskLength;
+            }
+        }
+
+        var blocks = new List<TaggedBlock>();
+        List<PsdLayer>? blockRecords = null;
+        var blockAlpha = false;
+        var sawLayerBlock = false;
+        while (end - position >= 12)
+        {
+            var header = new BigEndianReader(source.Slice(position, (int)Math.Min(16, end - position)));
+            var signature = header.ReadSignature();
+            if (signature is not ("8BIM" or "8B64"))
+            {
+                break;
+            }
+
+            var key = header.ReadSignature();
+            var wide = signature == "8B64" || (large && WideKeys.Contains(key));
+            if (wide && header.Remaining < 8)
+            {
+                break;
+            }
+
+            var length = wide ? header.ReadUInt64() : header.ReadUInt32();
+            var dataStart = position + header.Position;
+            if (length > (ulong)(end - dataStart))
+            {
+                break;
+            }
+
+            var dataLength = (long)length;
+            var layerBlock = key is "Lr16" or "Lr32" or "Layr" && dataLength >= 2;
+            if (layerBlock && dataLength > spanLimit)
+            {
+                blocks.Add(new TaggedBlock(key, ReadOnlyMemory<byte>.Empty));
+                if (records.Count == 0 && !sawLayerBlock)
+                {
+                    var blockReader = new BigEndianReader(source.Slice(dataStart, (int)Math.Min(dataLength, MaxWindow)));
+                    if (options.ReadLayers)
+                    {
+                        blockRecords = ReadLayerInfo(blockReader, document, out blockAlpha, source, dataStart, dataStart + dataLength, spanLimit);
+                    }
+                    else
+                    {
+                        blockRecords = [];
+                        blockAlpha = blockReader.ReadInt16() < 0;
+                    }
+                }
+            }
+            else if (dataLength <= MaxWindow)
+            {
+                blocks.Add(new TaggedBlock(key, source.Slice(dataStart, (int)dataLength)));
+            }
+
+            sawLayerBlock |= layerBlock;
+            position = dataStart + dataLength;
+
+            // Up to three pad bytes when the next signature does not start right away.
+            if (!StartsWithSignatureAt(source, position, end))
+            {
+                for (var pad = 1; pad <= 3 && position + pad <= end; pad++)
+                {
+                    if (StartsWithSignatureAt(source, position + pad, end))
+                    {
+                        position += pad;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (blockRecords is not null)
+        {
+            document.MergedImageHasTransparency |= blockAlpha;
+        }
+
+        FinishGlobalLayerBlocks(document, options, blockRecords ?? records, blocks, records.Count == 0 && blockRecords is null);
+    }
+
+    private static bool StartsWithSignatureAt(PsdSource source, long position, long end)
+    {
+        if (end - position < 4)
+        {
+            return false;
+        }
+
+        var span = source.Slice(position, 4).Span;
+        return span[0] == (byte)'8' && span[1] == (byte)'B' && ((span[2] == (byte)'I' && span[3] == (byte)'M') || (span[2] == (byte)'6' && span[3] == (byte)'4'));
     }
 
     /// <summary>Reads a u32 (PSD) or u64 (PSB) section length at <paramref name="offset"/> that must fit before <paramref name="end"/>.</summary>
@@ -303,10 +418,17 @@ internal static class PsdParser
         }
 
         var blocks = ReadTaggedBlocks(section, large, section.Length);
+        FinishGlobalLayerBlocks(document, options, records, blocks, records.Count == 0);
+    }
+
+    /// <summary>Stores the global blocks, reads the 16/32-bit layer block when the layer info had no records, and builds the tree.</summary>
+    private static void FinishGlobalLayerBlocks(PsdDocument document, PsdLoadOptions options, List<PsdLayer> records, List<TaggedBlock> blocks, bool readLayerBlock)
+    {
+        var large = document.IsLargeDocument;
         document.GlobalTaggedBlocks = blocks;
 
         // 16/32-bit documents keep their layers in a global Lr16/Lr32 block (Layr for 8-bit variants).
-        if (records.Count == 0)
+        if (readLayerBlock)
         {
             foreach (var block in blocks)
             {
@@ -342,7 +464,7 @@ internal static class PsdParser
     /// <paramref name="readerOffset"/>, and channel data is sliced from the source up to
     /// <paramref name="dataEnd"/> instead of from the reader.
     /// </summary>
-    private static List<PsdLayer> ReadLayerInfo(BigEndianReader reader, PsdDocument document, out bool mergedAlpha, PsdSource? source = null, long readerOffset = 0, long dataEnd = 0)
+    private static List<PsdLayer> ReadLayerInfo(BigEndianReader reader, PsdDocument document, out bool mergedAlpha, PsdSource? source = null, long readerOffset = 0, long dataEnd = 0, long spanLimit = MaxWindow)
     {
         var rawCount = reader.ReadInt16();
         mergedAlpha = rawCount < 0;
@@ -384,9 +506,11 @@ internal static class PsdParser
             {
                 if (source is not null)
                 {
-                    // A single channel past 2 GB cannot be one span; it reads as empty.
+                    // A channel past one span stays a file range (Data is empty); decoding reads it in pieces.
                     var length = Math.Min(lengths[c], Math.Max(0, dataEnd - dataOffset));
-                    channels.Add(new LayerChannel(layer.Channels[c].Id, length <= MaxWindow ? source.Slice(dataOffset, (int)length) : ReadOnlyMemory<byte>.Empty));
+                    channels.Add(length <= spanLimit
+                        ? new LayerChannel(layer.Channels[c].Id, source.Slice(dataOffset, (int)length))
+                        : new LayerChannel(layer.Channels[c].Id, ReadOnlyMemory<byte>.Empty) { LargeData = new ByteRange(source, dataOffset, length) });
                     dataOffset += length;
                     continue;
                 }
@@ -832,6 +956,17 @@ internal static class PsdParser
                     layer.FillColor = key == "SoCo" ? paint.GetColor("Clr ") : null;
                 }
             }
+        }
+
+        // Photoshop 5 effects ('lrFX') speak only for layers without a descriptor effects
+        // block: beside lfx2/lfxs/lmfx they are a lossy compatibility mirror that
+        // Photoshop ignores (reference psd_layer_records.cpp).
+        if (layer.GetTaggedBlock("lrFX") is { } lrfx && !blocks.Any(b => b.Key is "lfx2" or "lfxs" or "lmfx")
+            && Rendering.LegacyEffects.ToDescriptor(lrfx.Data, document.Colors) is { } legacy)
+        {
+            layer.Effects = legacy;
+            layer.EffectsVisible = legacy.GetBoolean("masterFXSwitch", true);
+            layer.EffectsAreLegacy = true;
         }
 
         if (layer.SectionType is PsdSectionType.OpenFolder or PsdSectionType.ClosedFolder)

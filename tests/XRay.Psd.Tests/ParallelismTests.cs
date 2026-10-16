@@ -35,6 +35,40 @@ public sealed class ParallelismTests
         }
     }
 
+    public static TheoryData<string> PsdToolsFixtures() => BandRenderingTests.PsdToolsFixtures();
+
+    [Theory]
+    [MemberData(nameof(PsdToolsFixtures))]
+    public void Parallel_and_sequential_renders_are_identical_on_psd_tools_files(string name)
+    {
+        var path = Fixtures.PsdTools(name);
+        var sequential = PsdDocument.Load(path).Render(new RenderOptions { Source = RenderSource.Layers, MaxDegreeOfParallelism = 1 });
+        var parallel = PsdDocument.Load(path);
+        using (Parallelism.Use(Degree, minimumStripWork: 1))
+        {
+            Assert.Equal(sequential.Pixels, parallel.Render(new RenderOptions { Source = RenderSource.Layers, MaxDegreeOfParallelism = Degree }).Pixels);
+        }
+    }
+
+    [Fact]
+    public void Ink_space_adjustments_are_identical_at_every_degree()
+    {
+        // levels_cmyk.psd builds the CMYK ink space (a parallel grid of refined nodes) and
+        // runs four Levels layers through it.
+        var path = Fixtures.PsdTools("adjustments/levels_cmyk.psd");
+        RgbaImage sequential;
+        using (Parallelism.Use(1))
+        {
+            sequential = PsdDocument.Load(path).Render(new RenderOptions { Source = RenderSource.Layers, MaxDegreeOfParallelism = 1 });
+        }
+
+        using (Parallelism.Use(Degree, minimumStripWork: 1))
+        {
+            var parallel = PsdDocument.Load(path).Render(new RenderOptions { Source = RenderSource.Layers, MaxDegreeOfParallelism = Degree });
+            Assert.Equal(sequential.Pixels, parallel.Pixels);
+        }
+    }
+
     [Theory]
     [InlineData("qual_rca_pinout.psd")]
     [InlineData("photoshop-bevel-texture-clouds.psd")]
@@ -247,6 +281,94 @@ public sealed class ParallelismTests
             PlanarImage.UnitFloatToBytes([value], one);
             return one[0];
         }
+    }
+
+    [Theory]
+    [InlineData("qual_rca_pinout.psd")]
+    [InlineData("photoshop-gradient-overlay-geometry.psd")]
+    public void Band_prefetch_and_png_rows_are_identical_at_every_degree(string name)
+    {
+        var document = Fixtures.Load(name);
+        byte[] sequential;
+        using (var stream = new MemoryStream())
+        {
+            document.RenderToPng(stream, new RenderOptions { Source = RenderSource.Layers, BandHeight = 50, MaxDegreeOfParallelism = 1 });
+            sequential = stream.ToArray();
+        }
+
+        using (Parallelism.Use(Degree, minimumStripWork: 1))
+        {
+            using var stream = new MemoryStream();
+            document.RenderToPng(stream, new RenderOptions { Source = RenderSource.Layers, BandHeight = 50, MaxDegreeOfParallelism = Degree });
+            Assert.Equal(sequential, stream.ToArray());
+        }
+    }
+
+    [Fact]
+    public void Path_rasterizer_bands_and_row_windows_match_the_sequential_raster()
+    {
+        var path = StarPath(new Random(5), 23);
+        var rect = new PsdRect(-7, -3, 181, 149);
+        float[] sequential;
+        using (Parallelism.Use(1))
+        {
+            sequential = PathRasterizer.RasterizePath(path, rect);
+        }
+
+        Assert.Contains(sequential, value => value > 0f && value < 1f);
+        using (Parallelism.Use(Degree, minimumStripWork: 1))
+        {
+            Assert.Equal(sequential, PathRasterizer.RasterizePath(path, rect));
+
+            // Any window of rows is the same rows of the whole raster.
+            foreach (var (first, end) in new[] { (0, 1), (5, 6), (37, 90), (100, rect.Height), (rect.Height - 1, rect.Height) })
+            {
+                var window = PathRasterizer.RasterizePath(path, rect, first, end);
+                Assert.Equal(sequential.AsSpan(first * rect.Width, (end - first) * rect.Width).ToArray(), window);
+            }
+        }
+    }
+
+    [Fact]
+    public void Vector_stroker_bands_match_the_sequential_raster()
+    {
+        var path = StarPath(new Random(9), 17);
+        var style = new Layers.VectorStrokeStyle { Enabled = true, Width = 5, Join = Layers.VectorStrokeJoin.Round, Cap = Layers.VectorStrokeCap.Round, Alignment = Layers.VectorStrokeAlignment.Outside };
+        var clip = new PsdRect(0, 0, 200, 160);
+        (float[] Coverage, PsdRect Rect) sequential;
+        using (Parallelism.Use(1))
+        {
+            sequential = VectorStroker.Rasterize(path, style, clip);
+        }
+
+        using (Parallelism.Use(Degree, minimumStripWork: 1))
+        {
+            var parallel = VectorStroker.Rasterize(path, style, clip);
+            Assert.Equal(sequential.Rect, parallel.Rect);
+            Assert.Equal(sequential.Coverage, parallel.Coverage);
+        }
+    }
+
+    /// <summary>Two overlapping star polygons with curved edges, in two shape groups (Add then Xor).</summary>
+    private static Layers.VectorPath StarPath(Random random, int points)
+    {
+        var subpaths = new List<Layers.PathSubpath>();
+        for (var group = 0; group < 2; group++)
+        {
+            var subpath = new Layers.PathSubpath { Closed = true, ShapeGroup = group, Operation = group == 0 ? Layers.PathCombineOperation.Add : Layers.PathCombineOperation.Xor };
+            for (var i = 0; i < points; i++)
+            {
+                var angle = i * 2 * Math.PI / points;
+                var radius = (i % 2 == 0 ? 70 : 30) + (random.NextDouble() * 10);
+                var x = 90 + (group * 13.37) + (Math.Cos(angle) * radius);
+                var y = 70 + (group * 7.1) + (Math.Sin(angle) * radius);
+                subpath.Knots.Add(new Layers.PathKnot(x - 3.3, y + 1.7, x, y, x + 3.3, y - 1.7, false));
+            }
+
+            subpaths.Add(subpath);
+        }
+
+        return new Layers.VectorPath { Subpaths = subpaths };
     }
 
     [Fact]

@@ -22,12 +22,17 @@ internal interface IAdjustment
 /// Beyond the reference: Color Balance (fitted to Photoshop captures), Vibrance, Black and
 /// White, Channel Mixer, Photo Filter and Gradient Map (<c>Adjustments.Color.cs</c>; see
 /// docs/adjustments.md for each one's status). Selective Color is parsed but not
-/// rendered, and Color Lookup is a no-op. The ink-space evaluation of CMYK and gray
-/// documents (which needs their ICC profiles) is not modeled.
+/// rendered. In CMYK, gray and duotone documents the channel-wise kinds run on the
+/// document's channels (<c>Adjustments.Inks.cs</c>).
 /// </remarks>
 internal static partial class Adjustments
 {
-    public static IAdjustment? Create(PsdLayer layer)
+    /// <summary>
+    /// The transform of an adjustment layer, or null when it has none the renderer models
+    /// (or its payload is malformed). <paramref name="colorLookup"/> turns on Color Lookup
+    /// layers (<see cref="RenderOptions"/>, off by default).
+    /// </summary>
+    public static IAdjustment? Create(PsdLayer layer, bool colorLookup = false)
     {
         if (layer.ContentKey is not { } key)
         {
@@ -38,11 +43,19 @@ internal static partial class Adjustments
         var data = block is null ? [] : block.Data.Span;
         try
         {
+            // CMYK, gray and duotone documents evaluate the channel-wise kinds on their own channels.
+            if (RunsOnInks(key, layer.Document.ColorMode) && layer.Document.InkSpace is { } inkSpace)
+            {
+                return CreateInkAdjustment(layer, key, data, inkSpace);
+            }
+
             return key switch
             {
                 "nvrt" => new InvertAdjustment(),
-                "thrs" => ParseThreshold(data) is { } level ? new ThresholdAdjustment(level) : null,
-                "post" => ParsePosterize(data) is { } levels ? LutAdjustment.Uniform(PosterizeLut(levels)) : null,
+                "thrs" => ParseThreshold(data) is { } level ? new ThresholdAdjustment(level, layer.Document.Depth == 16) : null,
+                "post" => ParsePosterize(data) is { } levels
+                    ? layer.Document.Depth == 16 ? new Posterize16Adjustment(levels) : LutAdjustment.Uniform(PosterizeLut(levels))
+                    : null,
                 "levl" => ParseLevels(data) is { } levelsSettings ? LutAdjustment.From(BuildLevelsLut(ForDocument(layer, levelsSettings))) : null,
                 "curv" => ParseCurves(data) is { } curves ? LutAdjustment.From(BuildCurvesLut(ForDocument(layer, curves))) : null,
                 "hue2" or "hue " => ParseHueSaturation(data) is { } hue ? new HueSaturationAdjustment(hue) : null,
@@ -57,6 +70,7 @@ internal static partial class Adjustments
                 "grdm" => ParseGradientMap(data) is { } map ? GradientMapAdjustment(map.Gradient, map.Reverse) : null,
                 "phfl" => ParsePhotoFilter(data) is { } filter ? new PixelAdjustment<PhotoFilterMap>(new(filter)) : null,
                 "vibA" => block is not null && ParseVibrance(block.Data) is { } vibrance ? new PixelAdjustment<VibranceMap>(new(vibrance)) : null,
+                "clrL" => colorLookup && block is not null && ParseColorLookup(block.Data) is { } lookup ? new ColorLookupAdjustment(lookup) : null,
                 _ => null,
             };
         }
@@ -142,20 +156,36 @@ internal static partial class Adjustments
         }
     }
 
-    /// <summary>Photoshop's Threshold: integer luma (30/59/11) against the level (<c>threshold_luminance</c>).</summary>
-    private sealed class ThresholdAdjustment(int level) : IAdjustment
+    /// <summary>
+    /// Photoshop's Threshold: the 30/59/11 luma against the level. 8-bit documents round the
+    /// integer luma (<see cref="ThresholdLevel"/>); 16-bit documents compare the luma at
+    /// full precision, which on psd-tools' threshold_16bits_rgb.psd classifies all 34,000
+    /// single-layer pixels right (the 8-bit rule misses 86 of them).
+    /// </summary>
+    private sealed class ThresholdAdjustment(int level, bool sixteenBit) : IAdjustment
     {
         public void Apply(Span<float> r, Span<float> g, Span<float> b)
         {
             for (var i = 0; i < r.Length; i++)
             {
-                var value = ThresholdLuminance(Byte(r[i]), Byte(g[i]), Byte(b[i])) >= level ? 1f : 0f;
-                r[i] = g[i] = b[i] = value;
+                var white = sixteenBit
+                    ? ((0.3 * r[i]) + (0.59 * g[i]) + (0.11 * b[i])) * 255.0 >= level
+                    : ThresholdLevel(Byte(r[i]), Byte(g[i]), Byte(b[i])) >= level;
+                r[i] = g[i] = b[i] = white ? 1f : 0f;
             }
         }
     }
 
+    /// <summary>The reference's <c>threshold_luminance</c>: integer 30/59/11 luma, truncated.</summary>
     internal static int ThresholdLuminance(int red, int green, int blue) => ((red * 30) + (green * 59) + (blue * 11)) / 100;
+
+    /// <summary>
+    /// The luma Threshold compares with its level: 30/59/11, rounded to the nearest integer.
+    /// The reference truncates (<see cref="ThresholdLuminance"/>); on psd-tools'
+    /// threshold_rgb.psd (four levels over a photograph, 34,000 single-layer pixels)
+    /// truncation misclassifies 85 pixels and rounding 1.
+    /// </summary>
+    internal static int ThresholdLevel(int red, int green, int blue) => ((red * 30) + (green * 59) + (blue * 11) + 50) / 100;
 
     /// <summary>
     /// Photoshop's Posterize (<c>posterize_channel_value</c>): equal-width input buckets
@@ -168,6 +198,21 @@ internal static partial class Adjustments
         return (byte)(bucket * 255 / (levels - 1));
     }
 
+    /// <summary>
+    /// Posterize at Photoshop's 16-bit precision (0..32768): equal-width buckets of the
+    /// 16-bit value, each mapped to the truncated 16-bit output step. Byte-exact on all
+    /// four layers of psd-tools' posterize_16bits_rgb.psd (3, 7, 13 and 21 levels), where
+    /// the 8-bit table misses 5% of the pixels by up to 128 levels: three 16-bit levels give
+    /// 0, 16384 and 32768, so the middle step reads 128 in 8 bits, not 127.
+    /// </summary>
+    internal static float Posterize16Value(float value, int levels)
+    {
+        levels = Math.Clamp(levels, 2, 255);
+        var sample = Math.Round(Math.Clamp(value, 0f, 1f) * 32768.0);
+        var bucket = Math.Min(Math.Floor(sample * levels / 32768.0), levels - 1);
+        return (float)(Math.Floor(bucket * 32768.0 / (levels - 1)) / 32768.0);
+    }
+
     internal static byte[] PosterizeLut(int levels)
     {
         var lut = new byte[256];
@@ -177,6 +222,25 @@ internal static partial class Adjustments
         }
 
         return lut;
+    }
+
+    /// <summary>Posterize of a 16-bit RGB document (<see cref="Posterize16Value"/>).</summary>
+    private sealed class Posterize16Adjustment(int levels) : IAdjustment
+    {
+        public void Apply(Span<float> r, Span<float> g, Span<float> b)
+        {
+            Posterize(r);
+            Posterize(g);
+            Posterize(b);
+        }
+
+        private void Posterize(Span<float> values)
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                values[i] = Posterize16Value(values[i], levels);
+            }
+        }
     }
 
     /// <summary>A channel-separable adjustment as three exact 256-entry tables (<c>build_adjustment_lut</c>).</summary>

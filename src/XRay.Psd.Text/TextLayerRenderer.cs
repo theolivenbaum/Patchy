@@ -68,12 +68,13 @@ public sealed class TextLayerRenderer : IDisposable
 
     /// <summary>
     /// Renders text in document pixels, optionally clipped to <paramref name="clip"/>. Type on a
-    /// path (<see cref="TextShapeKind.Other"/>) returns null: its path geometry is not decoded yet.
+    /// path (<see cref="TextShapeKind.Path"/>) follows <see cref="TextLayerInfo.Path"/>; unknown
+    /// shapes (<see cref="TextShapeKind.Other"/>) and vertical type on a path return null.
     /// </summary>
     public TextLayerRaster? Render(TextLayerInfo text, PsdRect? clip = null)
     {
         ArgumentNullException.ThrowIfNull(text);
-        if (text.ShapeKind == TextShapeKind.Other)
+        if (text.ShapeKind == TextShapeKind.Other || (text.ShapeKind == TextShapeKind.Path && text.Path is null))
         {
             return null;
         }
@@ -225,7 +226,8 @@ public sealed class TextLayerRenderer : IDisposable
         var transform = DocumentTransform(text.Transform);
         var axisAligned = Math.Abs(transform.B) < 1e-9 && Math.Abs(transform.C) < 1e-9;
         TextWarpMesh? warp = null;
-        if (Settings.ApplyWarp && text.WarpSettings is { IsIdentity: false } warpSettings)
+        var onPath = text.ShapeKind == TextShapeKind.Path;
+        if (Settings.ApplyWarp && !onPath && text.WarpSettings is { IsIdentity: false } warpSettings)
         {
             // The warp acts over the layout box: the frame for box text, the descriptor bounds otherwise (.reference/docs/warp.md).
             var box = text.ShapeKind == TextShapeKind.Box && text.BoxBounds is { IsEmpty: false } frame ? frame : text.Bounds;
@@ -235,7 +237,8 @@ public sealed class TextLayerRenderer : IDisposable
             }
         }
 
-        var snap = Settings.SnapToPixelGrid && axisAligned && warp is null;
+        // Glyphs on a path keep exact positions, like rotated text.
+        var snap = Settings.SnapToPixelGrid && axisAligned && warp is null && !onPath;
         var paths = new List<(SKPath Path, int Style, bool Stroke)>();
         try
         {

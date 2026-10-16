@@ -55,12 +55,17 @@ internal static class Target
             foreach (var layer in document.Layers)
             {
                 _ = layer.Style?.Effects.Count;
+                _ = layer.Metadata?.CompStates.Count;
             }
 
             if ((long)document.Width * document.Height <= MaxRenderPixels)
             {
                 _ = document.Render();
                 _ = document.Render(new RenderOptions { Source = RenderSource.Layers });
+                foreach (var band in document.RenderBands(new RenderOptions { Source = RenderSource.Layers, BandHeight = 37 }))
+                {
+                    _ = band.Image.Height;
+                }
             }
         }
         catch (PsdFormatException)

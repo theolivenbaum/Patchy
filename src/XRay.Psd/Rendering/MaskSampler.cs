@@ -23,18 +23,40 @@ internal sealed class MaskSampler
     public static MaskSampler Constant(float value) => new([], default, value);
 
     /// <summary>Builds the sampler for a raster mask, applying feather (gaussian sigma in px) and density.</summary>
-    public static MaskSampler? FromLayerMask(PsdLayer layer, LayerMask mask, PsdRect canvas) => FromPlane(layer, mask, canvas, clampFeather: true);
+    public static MaskSampler? FromLayerMask(PsdLayer layer, LayerMask mask, PsdRect canvas) => FromPlane(layer, mask, canvas, clampFeather: true, int.MinValue, int.MaxValue, null);
 
-    private static MaskSampler? FromPlane(PsdLayer layer, LayerMask mask, PsdRect canvas, bool clampFeather)
+    /// <summary>
+    /// The raster mask sampler for document rows [<paramref name="top"/>, <paramref name="bottom"/>)
+    /// only, each row identical to the whole sampler's (other rows read as the outside value).
+    /// A feathered mask blurs across rows, so it always decodes whole.
+    /// </summary>
+    public static MaskSampler? FromLayerMask(PsdLayer layer, LayerMask mask, PsdRect canvas, int top, int bottom, IO.ChannelReaders? readers) =>
+        FromPlane(layer, mask, canvas, clampFeather: true, top, bottom, readers);
+
+    /// <summary>Whether the sampler of <paramref name="mask"/> can be built for some rows alone (no feather to blur across them).</summary>
+    public static bool IsRowLocal(LayerMask mask) => mask.Disabled || mask.Feather <= 0;
+
+    private static MaskSampler? FromPlane(PsdLayer layer, LayerMask mask, PsdRect canvas, bool clampFeather, int top, int bottom, IO.ChannelReaders? readers)
     {
         if (mask.Disabled)
         {
             return null;
         }
 
+        if (!IsRowLocal(mask))
+        {
+            (top, bottom, readers) = (int.MinValue, int.MaxValue, null);
+        }
+
         var outside = mask.DefaultColor / 255f;
         var rect = mask.Bounds;
-        var plane = rect.IsEmpty ? [] : layer.DecodeMask(mask) ?? [];
+        var whole = top <= rect.Top && bottom >= rect.Bottom && readers is null;
+        var plane = rect.IsEmpty ? [] : (whole ? layer.DecodeMask(mask) : layer.DecodeChannelPlane(mask.ChannelId, rect, top, bottom, readers)) ?? [];
+        if (!whole && plane.Length > 0)
+        {
+            rect = new PsdRect(rect.Left, Math.Max(rect.Top, top), rect.Right, Math.Min(rect.Bottom, bottom));
+        }
+
         if (plane.Length == 0)
         {
             rect = default;
@@ -60,14 +82,36 @@ internal sealed class MaskSampler
     }
 
     /// <summary>Rasterizes a vector mask over <paramref name="region"/>; pixels outside the region are uncovered (or covered when inverted).</summary>
-    public static MaskSampler? FromVectorMask(VectorPath path, PsdRect region, byte density, double feather, PsdRect canvas)
+    public static MaskSampler? FromVectorMask(VectorPath path, PsdRect region, byte density, double feather, PsdRect canvas) =>
+        FromVectorMask(path, region, density, feather, canvas, int.MinValue, int.MaxValue);
+
+    /// <summary>
+    /// The vector mask sampler for document rows [<paramref name="top"/>, <paramref name="bottom"/>)
+    /// of <paramref name="region"/> only: the path rasterizes over <paramref name="region"/> as a
+    /// whole sampler would, but just those rows, so each comes out identical (other rows read
+    /// as outside the region). A feathered mask blurs across rows and always rasterizes whole.
+    /// </summary>
+    public static MaskSampler? FromVectorMask(VectorPath path, PsdRect region, byte density, double feather, PsdRect canvas, int top, int bottom)
     {
         if (path.Disabled)
         {
             return null;
         }
 
-        var coverage = PathRasterizer.RasterizePath(path, region);
+        if (feather > 0)
+        {
+            (top, bottom) = (int.MinValue, int.MaxValue);
+        }
+
+        var first = (int)Math.Clamp((long)top - region.Top, 0, region.Height);
+        var end = (int)Math.Clamp((long)bottom - region.Top, first, region.Height);
+        var whole = first == 0 && end == region.Height;
+        var coverage = whole ? PathRasterizer.RasterizePath(path, region) : PathRasterizer.RasterizePath(path, region, first, end);
+        if (!whole)
+        {
+            region = end > first ? new PsdRect(region.Left, region.Top + first, region.Right, region.Top + end) : default;
+        }
+
         var outside = 0f;
         if (path.Inverted)
         {
@@ -100,14 +144,17 @@ internal sealed class MaskSampler
     }
 
     /// <summary>Wraps Photoshop's baked vector-mask plane (unfeathered coverage), applying the vector feather and density.</summary>
-    public static MaskSampler? FromRenderedVectorMask(PsdLayer layer, LayerMask mask, PsdRect canvas)
+    public static MaskSampler? FromRenderedVectorMask(PsdLayer layer, LayerMask mask, PsdRect canvas) => FromRenderedVectorMask(layer, mask, canvas, int.MinValue, int.MaxValue, null);
+
+    /// <summary>The baked vector-mask sampler for some rows only (see <see cref="FromLayerMask(PsdLayer, LayerMask, PsdRect, int, int, IO.ChannelReaders?)"/>).</summary>
+    public static MaskSampler? FromRenderedVectorMask(PsdLayer layer, LayerMask mask, PsdRect canvas, int top, int bottom, IO.ChannelReaders? readers)
     {
         if (layer.VectorMask is { Disabled: true })
         {
             return null;
         }
 
-        return FromPlane(layer, mask with { Disabled = false }, canvas, clampFeather: false);
+        return FromPlane(layer, mask with { Disabled = false }, canvas, clampFeather: false, top, bottom, readers);
     }
 
     /// <summary>Value at one document pixel.</summary>

@@ -39,6 +39,8 @@ public sealed class MutationFuzzTests
             }
         }
 
+        // The type-on-a-path file (Txt2 path frames).
+        data.Add("../ag-psd/text-path.psd");
         return data;
     }
 
@@ -294,6 +296,7 @@ public sealed class MutationFuzzTests
             foreach (var layer in document.Layers)
             {
                 _ = layer.Style?.Effects.Count;
+                _ = layer.Metadata?.CompStates.Count;
             }
 
             // Header mutations can describe enormous canvases; rendering those only

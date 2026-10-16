@@ -12,8 +12,8 @@ It is a port of the PSD engine in Patchy, a C++ image editor whose source is kep
 - Rendering from the merged image Photoshop saved, or from the layers with a compositor that follows Photoshop's blending rules.
 - Built-in PNG and JPEG encoders. The optional `XRay.Psd.Skia` package adds `SKBitmap` interop and Skia encoders such as WebP.
 - Text extraction: layer and group names, type-layer content with fonts and style runs, channel and path names, slices, XMP and IPTC metadata, and text inside embedded PSD/PSB smart objects.
-- Optional type-layer re-rendering (`XRay.Psd.Text`, SkiaSharp and HarfBuzz): draws type layers from their text, for files that store no text pixels or when the text should be redrawn with other fonts. It follows Photoshop's layout model for point, box and vertical text, leading, tracking, glyph scales, alignment, transforms and Warp Text. See `docs/text-rendering.md`.
-- Typed views of the common image resources (resolution, guides and grid, thumbnail, slices, layer comps, print scale, pixel aspect ratio, version info, ICC profile, XMP, IPTC) and of each layer's effects.
+- Optional type-layer re-rendering (`XRay.Psd.Text`, SkiaSharp and HarfBuzz): draws type layers from their text, for files that store no text pixels or when the text should be redrawn with other fonts. It follows Photoshop's layout model for point, box, vertical and on-path text, leading, tracking, glyph scales, alignment, transforms and Warp Text. See `docs/text-rendering.md`.
+- Typed views of the common image resources (resolution, guides and grid, thumbnail, slices, layer comps, print scale, pixel aspect ratio, version info, ICC profile, XMP, IPTC), of each layer's effects, and of each layer's metadata (layer time and the visibility, position and appearance each layer comp records).
 
 The layer compositor renders layer effects (shadows, glows, overlays, satin, strokes, bevel and emboss), adjustment layers (Levels, Curves, Hue/Saturation, Brightness/Contrast, Exposure, Invert, Threshold, Posterize) and solid, gradient and pattern fills. Not rendered from layers yet: vector strokes on shape layers, Blend If, some adjustments (Color Balance, Vibrance, Black and White, Channel Mixer, Selective Color, Gradient Map, Photo Filter). Documents saved with "Maximize Compatibility" render exactly through the merged image. See `TODO.md`.
 
@@ -70,6 +70,14 @@ foreach (var guide in resources.GridAndGuides?.Guides ?? [])
 foreach (var comp in resources.LayerComps?.Comps ?? [])
 {
     Console.WriteLine($"layer comp \"{comp.Name}\"");
+    foreach (var layer in document.Layers)
+    {
+        // What the comp records for each layer (null values: the comp keeps the saved state).
+        if (layer.Metadata?.GetCompState(comp.Id) is { } state)
+        {
+            Console.WriteLine($"  {layer.Name}: visible {state.Visible}, offset {state.Offset}, opacity {state.Opacity}");
+        }
+    }
 }
 
 var thumbnailJpeg = resources.Thumbnail?.Data; // decode with XRay.Psd.Skia: resources.Thumbnail.Decode()
@@ -117,14 +125,28 @@ using var mapped = PsdDocument.Load("huge.psb", new PsdLoadOptions { MemoryMap =
 var image = mapped.Render(new RenderOptions { MaxDegreeOfParallelism = 1 });
 ```
 
-Files of 2 GB and more are always memory-mapped and parsed with 64-bit offsets. See `docs/performance.md` for the limits, the parallel model and the benchmarks.
+Large documents render in horizontal bands, holding one band of the canvas at a time. The bands are bit-identical to the same rows of `Render`, and they work past the size one canvas can hold (about 46000 x 46000 pixels, and about 23000 x 23000 for one `RgbaImage`):
+
+```csharp
+// Stream straight into a PNG (RGBA, or RGB when a background or an opaque merged image makes it opaque).
+mapped.RenderToPng("huge.png", new RenderOptions { Source = RenderSource.Layers });
+
+// Or take the bands yourself, top to bottom.
+foreach (var band in mapped.RenderBands(new RenderOptions { BandHeight = 512 }))
+{
+    Consume(band.Top, band.Image); // band.Image is document-wide, band.Image.Height rows
+}
+```
+
+Files of 2 GB and more are always memory-mapped and parsed with 64-bit offsets; channels, the merged image and 16/32-bit layer blocks past 2 GB are read in pieces. See `docs/performance.md` for what band rendering keeps whole, the parallel model and the benchmarks.
 
 Command line:
 
 ```bash
-dotnet run --project tools/XRay.Psd.Cli -- info file.psd --resources --effects
+dotnet run --project tools/XRay.Psd.Cli -- info file.psd --resources --effects --metadata
 dotnet run --project tools/XRay.Psd.Cli -- text file.psd
 dotnet run --project tools/XRay.Psd.Cli -- render file.psd out.png --layers
+dotnet run --project tools/XRay.Psd.Cli -- render huge.psb out.png --bands 0   # band rendering, 0 picks the band height
 ```
 
 ## Building and testing
@@ -136,7 +158,7 @@ dotnet test --solution XRay.Psd.slnx -c Release
 
 Benchmarks (BenchmarkDotNet): `dotnet run -c Release --project benchmarks/XRay.Psd.Benchmarks -- --filter "*" --job short`.
 
-Tests run every committed fixture in `tests/fixtures/psd` (parse, decode, truncation and seeded mutation robustness), compare renders with Photoshop's own captures, and cover the formats without fixtures through a synthetic PSD writer. Real 16/32-bit, grayscale, indexed, Lab, duotone, multichannel, bitmap and embedded PSB files come from the psd-tools collection (MIT), committed under `tests/fixtures/psd-tools/` (see `NOTICE`).
+Tests run every committed fixture in `tests/fixtures/psd` (parse, decode, truncation and seeded mutation robustness), compare renders with Photoshop's own captures, and cover the formats without fixtures through a synthetic PSD writer. Real 16/32-bit, grayscale, indexed, Lab, duotone, multichannel, bitmap and embedded PSB files come from the psd-tools collection (MIT), committed under `tests/fixtures/psd-tools/`, and a type-on-a-path file from ag-psd (MIT) under `tests/fixtures/ag-psd/` (see `NOTICE`).
 
 NuGet packages (`XRay.Psd`, `XRay.Psd.Skia`, `XRay.Psd.Text`, with `.snupkg` symbols and Source Link):
 

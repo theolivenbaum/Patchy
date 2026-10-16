@@ -151,17 +151,18 @@ public sealed record PsdLayerEffect
 }
 
 /// <summary>
-/// A read-only view of a layer's style (<c>lfx2</c>/<c>lmfx</c>): every effect
+/// A read-only view of a layer's style (<c>lfx2</c>/<c>lmfx</c>, or Photoshop 5 <c>lrFX</c>): every effect
 /// in file order, enabled or not. It projects the compositor's own effect
 /// parsing (<c>Rendering/LayerEffects.cs</c>), so the values match what renders.
 /// </summary>
 public sealed class PsdLayerStyle
 {
-    private PsdLayerStyle(bool visible, IReadOnlyList<PsdLayerEffect> effects, Descriptor descriptor)
+    private PsdLayerStyle(bool visible, IReadOnlyList<PsdLayerEffect> effects, Descriptor descriptor, bool isLegacy)
     {
         Visible = visible;
         Effects = effects;
         Descriptor = descriptor;
+        IsLegacy = isLegacy;
     }
 
     /// <summary>The master "effects visible" switch (<c>masterFXSwitch</c>).</summary>
@@ -173,8 +174,15 @@ public sealed class PsdLayerStyle
     /// <summary>The effects that render: enabled ones, when <see cref="Visible"/> is on.</summary>
     public IEnumerable<PsdLayerEffect> ActiveEffects => Visible ? Effects.Where(e => e.Enabled) : [];
 
-    /// <summary>The layer-effects descriptor.</summary>
+    /// <summary>The layer-effects descriptor (for <see cref="IsLegacy"/> styles, the translation of <c>lrFX</c>).</summary>
     public Descriptor Descriptor { get; }
+
+    /// <summary>
+    /// The style comes from Photoshop 5 effects (<c>lrFX</c>, on a layer without
+    /// <c>lfx2</c>/<c>lfxs</c>/<c>lmfx</c>): drop and inner shadows, outer and inner
+    /// glows, bevel and emboss, and color fill, translated into the modern descriptor.
+    /// </summary>
+    public bool IsLegacy { get; }
 
     internal static PsdLayerStyle? Create(PsdLayer layer)
     {
@@ -218,7 +226,7 @@ public sealed class PsdLayerStyle
             }
         }
 
-        return new PsdLayerStyle(layer.EffectsVisible, effects, root);
+        return new PsdLayerStyle(layer.EffectsVisible, effects, root, layer.EffectsAreLegacy);
     }
 
     private static PsdLayerEffectKind? KindOf(string key) => key switch

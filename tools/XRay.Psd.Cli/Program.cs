@@ -12,11 +12,12 @@ internal static class Cli
         psdtool - inspect, render and extract text from PSD/PSB files
 
         Usage:
-          psdtool info <file.psd> [--resources] [--effects]
+          psdtool info <file.psd> [--resources] [--effects] [--metadata]
                                                       Print the header and layer tree, plus the typed image
-                                                      resources and each layer's effects when asked
+                                                      resources, each layer's effects and each layer's
+                                                      metadata (layer time, layer comp state) when asked
           psdtool text <file.psd> [--content-only]    Print all text (layer names, type layers, metadata...)
-          psdtool render <file.psd> <out.png|out.jpg> [--layers|--merged] [--quality N] [--background RRGGBB]
+          psdtool render <file.psd> <out.png|out.jpg> [--layers|--merged] [--quality N] [--background RRGGBB] [--bands ROWS]
           psdtool layers <file.psd> <out-dir>         Write each content layer as a PNG
         """;
 
@@ -32,7 +33,7 @@ internal static class Cli
         {
             return args[0] switch
             {
-                "info" => Info(args[1], args.Contains("--resources"), args.Contains("--effects")),
+                "info" => Info(args[1], args.Contains("--resources"), args.Contains("--effects"), args.Contains("--metadata")),
                 "text" => Text(args[1], args.Contains("--content-only")),
                 "render" when args.Length >= 3 => Render(args[1], args[2], args[3..]),
                 "layers" when args.Length >= 3 => Layers(args[1], args[2]),
@@ -52,7 +53,7 @@ internal static class Cli
         return 2;
     }
 
-    private static int Info(string path, bool resources = false, bool effects = false)
+    private static int Info(string path, bool resources = false, bool effects = false, bool metadata = false)
     {
         var document = PsdDocument.Load(path);
         Console.WriteLine(document);
@@ -105,6 +106,11 @@ internal static class Cli
             {
                 InfoDetails.PrintStyle(style, new string(' ', (depth * 2) + 2));
             }
+
+            if (metadata && layer.Metadata is { } layerMetadata)
+            {
+                InfoDetails.PrintMetadata(layerMetadata, new string(' ', (depth * 2) + 2));
+            }
         }
 
         Console.WriteLine($"global blocks: {string.Join(' ', document.GlobalTaggedBlocks.Select(b => $"{b.Key}({b.Data.Length})"))}");
@@ -134,6 +140,11 @@ internal static class Cli
                 Console.WriteLine($"  fonts: {string.Join(", ", info.Fonts)}");
             }
 
+            if (item.TextInfo?.Path is { } textPath)
+            {
+                Console.WriteLine(FormattableString.Invariant($"  on a path: {textPath.Segments.Count} segments, text from {textPath.RangeStart:0.###} to {textPath.RangeEnd:0.###}{(textPath.Flipped ? ", flipped" : string.Empty)}"));
+            }
+
             Console.WriteLine();
         }
 
@@ -145,6 +156,7 @@ internal static class Cli
         var source = RenderSource.Auto;
         var quality = 90;
         PsdColor? background = null;
+        int? bands = null;
         for (var i = 0; i < options.Length; i++)
         {
             switch (options[i])
@@ -158,6 +170,9 @@ internal static class Cli
                 case "--quality" when i + 1 < options.Length:
                     quality = int.Parse(options[++i], CultureInfo.InvariantCulture);
                     break;
+                case "--bands" when i + 1 < options.Length:
+                    bands = int.Parse(options[++i], CultureInfo.InvariantCulture);
+                    break;
                 case "--background" when i + 1 < options.Length:
                     var hex = options[++i].TrimStart('#');
                     var value = Convert.ToInt32(hex, 16);
@@ -169,6 +184,19 @@ internal static class Cli
         }
 
         var document = PsdDocument.Load(path);
+        if (bands is { } bandHeight)
+        {
+            // Band rendering streams straight into the PNG, for documents too large for one canvas.
+            if (!output.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            {
+                return Fail("--bands writes PNG only");
+            }
+
+            document.RenderToPng(output, new RenderOptions { Source = source, Background = background, BandHeight = bandHeight });
+            Console.WriteLine($"wrote {output} ({document.Width}x{document.Height}, in bands)");
+            return 0;
+        }
+
         var image = document.Render(new RenderOptions { Source = source, Background = background });
         image.Save(output, quality);
         Console.WriteLine($"wrote {output} ({image.Width}x{image.Height})");

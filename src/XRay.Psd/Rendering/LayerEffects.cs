@@ -9,9 +9,17 @@ internal enum StrokePosition
     Center,
 }
 
-internal sealed record ShadowEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float AngleDegrees, float Distance, float SpreadOrChoke, float Size, bool LayerConceals);
+/// <summary>
+/// A drop or inner shadow. <paramref name="Contour"/> is the transfer contour (<c>TrnS</c>,
+/// null when Linear) with its anti-aliasing (<c>AntA</c>).
+/// </summary>
+internal sealed record ShadowEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float AngleDegrees, float Distance, float SpreadOrChoke, float Size, bool LayerConceals, StyleContour? Contour = null, bool ContourAntiAliased = false);
 
-internal sealed record GlowEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float SpreadOrChoke, float Size, float Range, bool CenterSource, bool Precise, Gradient? Gradient);
+/// <summary>
+/// An outer or inner glow. <paramref name="Gradient"/> is set for gradient glows
+/// (<c>Grad</c> without <c>Clr </c>); <paramref name="Contour"/> as for shadows.
+/// </summary>
+internal sealed record GlowEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, float SpreadOrChoke, float Size, float Range, bool CenterSource, bool Precise, Gradient? Gradient, StyleContour? Contour = null, bool ContourAntiAliased = false);
 
 /// <summary>A color, gradient or pattern overlay; <paramref name="Dither"/> is the gradient's <c>Dthr</c> flag.</summary>
 internal sealed record OverlayEffect(PsdBlendMode Mode, PsdColor Color, float Opacity, Gradient? Gradient, PatternPlacement? Pattern = null, bool Dither = false);
@@ -105,13 +113,14 @@ internal sealed class LayerEffects
                             Mode(d, "mul "), d.GetColor("Clr ") ?? PsdColor.Black, Percent(d, "Opct", 75),
                             Angle(d, globalAngle), Math.Max(0, (float)d.GetNumber("Dstn", 5)),
                             Math.Clamp((float)d.GetNumber("Ckmt", 0), 0, 100), Math.Max(0, (float)d.GetNumber("blur", 5)),
-                            d.GetBoolean("layerConceals", true)));
+                            d.GetBoolean("layerConceals", true), Contour(d), d.GetBoolean("AntA")));
                         break;
                     case "IrSh":
                         effects.InnerShadows.Add(new ShadowEffect(
                             Mode(d, "mul "), d.GetColor("Clr ") ?? PsdColor.Black, Percent(d, "Opct", 75),
                             Angle(d, globalAngle), Math.Max(0, (float)d.GetNumber("Dstn", 5)),
-                            Math.Clamp((float)d.GetNumber("Ckmt", 0), 0, 100), Math.Max(0, (float)d.GetNumber("blur", 5)), false));
+                            Math.Clamp((float)d.GetNumber("Ckmt", 0), 0, 100), Math.Max(0, (float)d.GetNumber("blur", 5)), false,
+                            Contour(d), d.GetBoolean("AntA")));
                         break;
                     case "OrGl":
                     case "IrGl":
@@ -121,7 +130,8 @@ internal sealed class LayerEffects
                                 Math.Clamp((float)d.GetNumber("Ckmt", 0), 0, 100), Math.Max(0, (float)d.GetNumber("blur", 5)),
                                 Math.Clamp((float)d.GetNumber("Inpr", 100), 1, 100), d.GetEnum("glwS") == "SrcC",
                                 d.GetEnum("GlwT") == "PrBL",
-                                null); // Gradient glows render with their solid color, as in the reference (docs/rendering.md).
+                                d.GetObject("Clr ") is null && d.GetObject("Grad") is not null ? Gradient.FromDescriptor(d) : null,
+                                Contour(d), d.GetBoolean("AntA"));
                             (effect.Kind == "OrGl" ? effects.OuterGlows : effects.InnerGlows).Add(glow);
                             break;
                         }
@@ -243,6 +253,9 @@ internal sealed class LayerEffects
             yield return (kind, value.Object);
         }
     }
+
+    /// <summary>The transfer contour of a shadow or glow, or null when it is Linear.</summary>
+    private static StyleContour? Contour(Descriptor d) => StyleContour.FromDescriptor(d.GetObject("TrnS")) is { IsLinear: false } contour ? contour : null;
 
     private static PsdBlendMode Mode(Descriptor d, string fallback) => Mode(d, "Md  ", fallback);
 

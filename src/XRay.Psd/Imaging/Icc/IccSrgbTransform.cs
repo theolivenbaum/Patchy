@@ -254,7 +254,14 @@ internal sealed class IccSrgbTransform
     /// ink) at <paramref name="depth"/> into the image's RGB planes. Returns
     /// false when this depth is not color managed (32-bit gray, LUT and CMYK).
     /// </summary>
-    public bool Apply(float[][] planes, int depth, PlanarImage image)
+    public bool Apply(float[][] planes, int depth, PlanarImage image) => Apply(planes, depth, image.R, image.G, image.B, image.R.Length);
+
+    /// <summary>
+    /// Converts the first <paramref name="count"/> samples of PSD-convention device
+    /// planes into <paramref name="red"/>, <paramref name="green"/> and
+    /// <paramref name="blue"/>, with the same tables as <see cref="Apply(float[][], int, PlanarImage)"/>.
+    /// </summary>
+    public bool Apply(float[][] planes, int depth, float[] red, float[] green, float[] blue, int count)
     {
         var tables = GetTables(depth);
         if (tables is null)
@@ -262,7 +269,7 @@ internal sealed class IccSrgbTransform
             return false;
         }
 
-        var count = image.R.Length;
+        var image = new Output(red, green, blue);
         if (count < ParallelThreshold)
         {
             ApplyRange(tables, planes, image, 0, count);
@@ -627,7 +634,7 @@ internal sealed class IccSrgbTransform
         return grid;
     }
 
-    private static void ApplyRange(Tables tables, float[][] planes, PlanarImage image, int start, int end)
+    private static void ApplyRange(Tables tables, float[][] planes, Output image, int start, int end)
     {
         switch (tables.Kind)
         {
@@ -649,7 +656,7 @@ internal sealed class IccSrgbTransform
         }
     }
 
-    private static void ApplyGray(Tables tables, float[] gray, PlanarImage image, int start, int end)
+    private static void ApplyGray(Tables tables, float[] gray, Output image, int start, int end)
     {
         var table = tables.Red!;
         var scale = (float)tables.MaxIndex;
@@ -664,7 +671,7 @@ internal sealed class IccSrgbTransform
         }
     }
 
-    private static void ApplyMatrix(Tables tables, float[][] planes, PlanarImage image, int start, int end)
+    private static void ApplyMatrix(Tables tables, float[][] planes, Output image, int start, int end)
     {
         float[] r = image.R, g = image.G, b = image.B;
         if (tables.Red is { } redTable)
@@ -726,7 +733,7 @@ internal sealed class IccSrgbTransform
     }
 
     /// <summary>A gray LUT profile sampled per input level (or 4096 steps), linear between entries.</summary>
-    private static void ApplyGrayLut(Tables tables, float[] gray, PlanarImage image, int start, int end)
+    private static void ApplyGrayLut(Tables tables, float[] gray, Output image, int start, int end)
     {
         var grid = tables.Grid!;
         var max = tables.MaxIndex;
@@ -741,7 +748,7 @@ internal sealed class IccSrgbTransform
         }
     }
 
-    private static void ApplyGrid3(Tables tables, float[][] planes, PlanarImage image, int start, int end)
+    private static void ApplyGrid3(Tables tables, float[][] planes, Output image, int start, int end)
     {
         var grid = tables.Grid!;
         var max = tables.MaxIndex;
@@ -758,7 +765,41 @@ internal sealed class IccSrgbTransform
         }
     }
 
-    private static void ApplyGrid4(Tables tables, float[][] planes, PlanarImage image, int start, int end)
+    /// <summary>
+    /// One CMYK color (PSD convention, 1 = no ink) through the 8-bit pixel grid, exactly as
+    /// <see cref="Apply(float[][], int, float[], float[], float[], int)"/> converts it.
+    /// Returns false when this transform has no CMYK grid.
+    /// </summary>
+    public bool ConvertCmyk(float c, float m, float y, float k, out float red, out float green, out float blue)
+    {
+        if (Channels != 4 || GetTables(8) is not { Kind: TableKind.Grid4 } tables)
+        {
+            red = green = blue = 0;
+            return false;
+        }
+
+        var grid = tables.Grid!;
+        var max = tables.MaxIndex;
+        var points = tables.GridPoints;
+        int sk = 3, sy = points * 3, sm = points * points * 3, sc = points * points * points * 3;
+        Locate(c, max, out var ic, out var fc);
+        Locate(m, max, out var im, out var fm);
+        Locate(y, max, out var iy, out var fy);
+        Locate(k, max, out var ik, out var fk);
+        var origin = (ic * sc) + (im * sm) + (iy * sy) + (ik * sk);
+        Tetrahedral(grid, origin, sm, sy, sk, fm, fy, fk, out red, out green, out blue);
+        if (fc > 0)
+        {
+            Tetrahedral(grid, origin + sc, sm, sy, sk, fm, fy, fk, out var r1, out var g1, out var b1);
+            red += (r1 - red) * fc;
+            green += (g1 - green) * fc;
+            blue += (b1 - blue) * fc;
+        }
+
+        return true;
+    }
+
+    private static void ApplyGrid4(Tables tables, float[][] planes, Output image, int start, int end)
     {
         var grid = tables.Grid!;
         var max = tables.MaxIndex;
@@ -840,6 +881,9 @@ internal sealed class IccSrgbTransform
         g = (w0 * v[o + 1]) + (w1 * v[o + a1 + 1]) + (w2 * v[o + a2 + 1]) + (w3 * v[o + a3 + 1]);
         b = (w0 * v[o + 2]) + (w1 * v[o + a1 + 2]) + (w2 * v[o + a2 + 2]) + (w3 * v[o + a3 + 2]);
     }
+
+    /// <summary>The three output planes a conversion writes.</summary>
+    private readonly record struct Output(float[] R, float[] G, float[] B);
 
     private enum TableKind
     {
