@@ -20,7 +20,8 @@ internal static partial class Adjustments
     /// whose records supersede the bitmap's). Photoshop writes the bitmap as a u32 even
     /// though Adobe's table says u16; both shapes are tried and Photoshop's wins when both
     /// parse. Up to three trailing zero bytes (the <c>curv</c> padding) are accepted.
-    /// Channels 0..3 are composite, red, green and blue; others are validated and ignored.
+    /// Channels 0..3 are composite, red, green and blue (cyan, magenta and yellow in a CMYK
+    /// document), 4 is a CMYK document's black ink; others are validated and ignored.
     /// </summary>
     /// <exception cref="PsdFormatException">The body is malformed.</exception>
     internal static CurvesSettings ReadAcv(ReadOnlySpan<byte> bytes)
@@ -33,7 +34,7 @@ internal static partial class Adjustments
         var data = bytes.ToArray();
         var reader = new BigEndianReader(data);
         var version = reader.ReadUInt16();
-        var curves = new CurvePoint[4][];
+        var curves = new CurvePoint[5][];
         if (version == 4)
         {
             var count = reader.ReadUInt16();
@@ -88,7 +89,10 @@ internal static partial class Adjustments
             curves[0] ?? CurvesSettings.IdentityPoints,
             curves[1] ?? CurvesSettings.IdentityPoints,
             curves[2] ?? CurvesSettings.IdentityPoints,
-            curves[3] ?? CurvesSettings.IdentityPoints);
+            curves[3] ?? CurvesSettings.IdentityPoints)
+        {
+            BlackInk = curves[4] ?? CurvesSettings.IdentityPoints,
+        };
     }
 
     private static CurvePoint[][] ReadBitmapShape(BigEndianReader reader, bool photoshopBitmap)
@@ -100,7 +104,7 @@ internal static partial class Adjustments
             throw new PsdFormatException("Curves data has an invalid curve bitmap.");
         }
 
-        var curves = new CurvePoint[4][];
+        var curves = new CurvePoint[5][];
         for (var channel = 0; channel < bits; channel++)
         {
             if ((bitmap & (1u << channel)) != 0)

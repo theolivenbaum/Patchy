@@ -35,6 +35,25 @@ public sealed class ParallelismTests
         }
     }
 
+    [Fact]
+    public void Ink_space_adjustments_are_identical_at_every_degree()
+    {
+        // levels_cmyk.psd builds the CMYK ink space (a parallel grid of refined nodes) and
+        // runs four Levels layers through it.
+        var path = Fixtures.PsdTools("adjustments/levels_cmyk.psd");
+        RgbaImage sequential;
+        using (Parallelism.Use(1))
+        {
+            sequential = PsdDocument.Load(path).Render(new RenderOptions { Source = RenderSource.Layers, MaxDegreeOfParallelism = 1 });
+        }
+
+        using (Parallelism.Use(Degree, minimumStripWork: 1))
+        {
+            var parallel = PsdDocument.Load(path).Render(new RenderOptions { Source = RenderSource.Layers, MaxDegreeOfParallelism = Degree });
+            Assert.Equal(sequential.Pixels, parallel.Pixels);
+        }
+    }
+
     [Theory]
     [InlineData("qual_rca_pinout.psd")]
     [InlineData("photoshop-bevel-texture-clouds.psd")]

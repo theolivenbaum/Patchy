@@ -299,7 +299,7 @@ internal sealed partial class LayerCompositor
 
     private void ApplyAdjustment(PlanarImage target, PsdLayer layer, MaskChain? masks)
     {
-        var adjustment = Adjustments.Create(layer);
+        var adjustment = Adjustments.Create(layer, _options.RenderColorLookup);
         if (adjustment is null)
         {
             return;
