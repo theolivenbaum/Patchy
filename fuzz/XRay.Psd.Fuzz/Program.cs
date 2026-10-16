@@ -55,6 +55,7 @@ internal static class Target
             foreach (var layer in document.Layers)
             {
                 _ = layer.Style?.Effects.Count;
+                _ = layer.Metadata?.CompStates.Count;
             }
 
             if ((long)document.Width * document.Height <= MaxRenderPixels)

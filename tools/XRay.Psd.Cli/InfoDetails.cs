@@ -95,5 +95,46 @@ internal static class InfoDetails
         }
     }
 
+    public static void PrintMetadata(PsdLayerMetadata metadata, string indent)
+    {
+        var time = metadata.LayerTime is { } stamp ? $", layer time {stamp.UtcDateTime.ToString("u", CultureInfo.InvariantCulture)}" : string.Empty;
+        Console.WriteLine($"{indent}metadata: {string.Join(' ', metadata.Items.Select(i => i.Key))}{time}");
+        foreach (var state in metadata.CompStates)
+        {
+            var parts = new List<string> { $"comps {string.Join(',', state.CompIds)}" };
+            if (state.Visible is { } visible)
+            {
+                parts.Add(visible ? "visible" : "hidden");
+            }
+
+            if (state.Offset is { } offset)
+            {
+                parts.Add(Invariant($"offset {offset.X:0.##},{offset.Y:0.##}"));
+            }
+
+            if (state.BlendMode is { } mode)
+            {
+                parts.Add(mode.ToString());
+            }
+
+            if (state.Opacity is { } opacity)
+            {
+                parts.Add(Invariant($"opacity {opacity:0.##}"));
+            }
+
+            if (state.FillOpacity is { } fill)
+            {
+                parts.Add(Invariant($"fill {fill:0.##}"));
+            }
+
+            if (state.Effects is not null)
+            {
+                parts.Add("effects");
+            }
+
+            Console.WriteLine($"{indent}  comp state: {string.Join(", ", parts)}");
+        }
+    }
+
     private static string Invariant(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 }

@@ -5,17 +5,21 @@ using XRay.Psd.Rendering;
 
 namespace XRay.Psd.Text.Tests.Support;
 
-/// <summary>The bundled Liberation Sans face (metric-compatible with Arial) and renderers that use only it.</summary>
+/// <summary>
+/// The bundled faces, Liberation Sans (metric-compatible with Arial) and Carlito (metric-compatible
+/// with Calibri, for ag-psd's type-on-a-path fixture), and renderers that use only them.
+/// </summary>
 internal static class TestFonts
 {
     private static readonly Lazy<FontCollection> Collection = new(() =>
     {
         var collection = new FontCollection();
         collection.AddFile(Path.Combine(AppContext.BaseDirectory, "Fonts", "LiberationSans-Regular.ttf"));
+        collection.AddFile(Path.Combine(AppContext.BaseDirectory, "Fonts", "Carlito-Regular.ttf"));
         return collection;
     });
 
-    /// <summary>Resolves ArialMT (and its aliases) to the bundled face; nothing else resolves.</summary>
+    /// <summary>Resolves ArialMT and Calibri (and their aliases) to the bundled faces; nothing else resolves.</summary>
     public static FontCollection Fonts => Collection.Value;
 
     public static SKTypeface LiberationSans => Fonts.Typefaces[0];

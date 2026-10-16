@@ -210,13 +210,121 @@ public sealed class LayoutTests : IDisposable
     }
 
     [Fact]
-    public void Type_on_a_path_is_not_drawn()
+    public void Unknown_shapes_and_paths_without_geometry_are_not_drawn()
     {
         var info = Model("On a path");
-        var onPath = new TextLayerInfo { Text = info.Text, RawText = info.RawText, StyleRuns = info.StyleRuns, Paragraphs = info.Paragraphs, Transform = info.Transform, ShapeKind = TextShapeKind.Other, ShapeType = 2 };
+        var other = new TextLayerInfo { Text = info.Text, RawText = info.RawText, StyleRuns = info.StyleRuns, Paragraphs = info.Paragraphs, Transform = info.Transform, ShapeKind = TextShapeKind.Other, ShapeType = 2 };
 
-        Assert.Null(_renderer.Render(onPath));
+        Assert.Null(_renderer.Render(other));
+        Assert.Null(_renderer.Render(OnPath(info, null)));
+        Assert.Null(_renderer.Render(OnPath(Model("On a path", orientation: TextOrientation.Vertical), Line(0, 0, 300, 0))));
     }
+
+    [Theory]
+    [InlineData(TextJustification.Left)]
+    [InlineData(TextJustification.Center)]
+    [InlineData(TextJustification.Right)]
+    public void Path_text_on_a_straight_path_matches_point_text(TextJustification justification)
+    {
+        // A horizontal path from x 0 to 300 with markers at 0.2 and 0.8: the range is x 60 to 240,
+        // so left, center and right text sit where point text anchored at 60, 150 and 240 would.
+        var path = Line(0, 0, 300, 0) with { RangeStart = 0.2, RangeEnd = 0.8 };
+        var anchor = justification switch
+        {
+            TextJustification.Left => 60.0,
+            TextJustification.Center => 150.0,
+            _ => 240.0,
+        };
+        var onPath = _renderer.Layout(OnPath(Model("HHHH", justification: justification), path));
+        var point = _renderer.Layout(Model("HHHH", justification: justification));
+
+        Assert.Equal(point.Glyphs.Count, onPath.Glyphs.Count);
+        for (var i = 0; i < point.Glyphs.Count; i++)
+        {
+            Assert.Equal(point.Glyphs[i].E + anchor, onPath.Glyphs[i].E, 1e-6);
+            Assert.Equal(point.Glyphs[i].F, onPath.Glyphs[i].F, 1e-6);
+            Assert.Equal(point.Glyphs[i].A, onPath.Glyphs[i].A, 1e-9);
+            Assert.Equal(0, onPath.Glyphs[i].B, 1e-9);
+        }
+    }
+
+    [Fact]
+    public void Path_text_past_the_end_marker_is_overset()
+    {
+        // "HHHH" at 24 px is 69.4 px wide; a 40 px range keeps the glyphs whose middle fits.
+        var info = OnPath(Model("HHHH"), Line(0, 0, 100, 0) with { RangeEnd = 0.4 });
+
+        var layout = _renderer.Layout(info);
+
+        Assert.Equal(2, layout.Glyphs.Count);
+    }
+
+    [Fact]
+    public void Path_text_turns_with_the_path_and_flips_to_the_other_side()
+    {
+        // A path pointing down the page: glyphs turn 90 degrees clockwise and stand on its left
+        // side as it travels, which is the right side of the page. Flipped, the text runs up
+        // the page on the other side.
+        var down = new TextPath { Segments = [Straight(0, 0, 0, 200)], RangeEnd = 1 };
+        var info = Model("HH", anchor: (100, 20));
+
+        var turned = _renderer.Layout(OnPath(info, down)).Glyphs;
+        var flipped = _renderer.Layout(OnPath(info, down with { Flipped = true })).Glyphs;
+
+        Assert.All(turned, g => Assert.Equal(0, g.A, 1e-9));
+        Assert.All(turned, g => Assert.True(g.B > 0));
+        Assert.All(turned, g => Assert.Equal(0, g.E, 1e-9));
+        Assert.True(turned[1].F > turned[0].F);
+        Assert.All(flipped, g => Assert.True(g.B < 0));
+        Assert.True(flipped[1].F < flipped[0].F);
+
+        var pageRight = Ink(OnPath(info, down));
+        var pageLeft = Ink(OnPath(info, down with { Flipped = true }));
+        Assert.True(pageRight.Left >= 99, pageRight.ToString());
+        Assert.True(pageLeft.Right <= 101, pageLeft.ToString());
+    }
+
+    [Fact]
+    public void Path_text_wraps_around_a_closed_path()
+    {
+        // A square path; the range starts near the end of the last side and wraps past the start.
+        var square = new TextPath
+        {
+            Segments = [Straight(0, 0, 100, 0), Straight(100, 0, 100, 100), Straight(100, 100, 0, 100), Straight(0, 100, 0, 0)],
+            RangeStart = 3.5,
+            RangeEnd = 0.5,
+        };
+        Assert.True(square.IsClosed);
+
+        var glyphs = _renderer.Layout(OnPath(Model("HHHH"), square)).Glyphs;
+
+        // From (0, 50) up the left side, then right along the top edge.
+        Assert.Equal(4, glyphs.Count);
+        Assert.Contains(glyphs, g => Math.Abs(g.A) < 1e-9);
+        Assert.Contains(glyphs, g => Math.Abs(g.B) < 1e-9);
+    }
+
+    private static TextLayerInfo OnPath(TextLayerInfo info, TextPath? path) => new()
+    {
+        Text = info.Text,
+        RawText = info.RawText,
+        StyleRuns = info.StyleRuns,
+        Paragraphs = info.Paragraphs,
+        Transform = info.Transform,
+        Orientation = info.Orientation,
+        AntiAlias = info.AntiAlias,
+        ShapeKind = TextShapeKind.Path,
+        ShapeType = 1,
+        Path = path,
+    };
+
+    private static TextPathSegment Straight(double x0, double y0, double x1, double y1) => new(
+        new TextPoint(x0, y0),
+        new TextPoint(x0 + ((x1 - x0) / 3), y0 + ((y1 - y0) / 3)),
+        new TextPoint(x0 + (2 * (x1 - x0) / 3), y0 + (2 * (y1 - y0) / 3)),
+        new TextPoint(x1, y1));
+
+    private static TextPath Line(double x0, double y0, double x1, double y1) => new() { Segments = [Straight(x0, y0, x1, y1)], RangeEnd = 1 };
 
     // ---- helpers ----
 
