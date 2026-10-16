@@ -196,14 +196,42 @@ public sealed class GradientTests
     }
 
     [Fact]
-    public void Layer_style_frames_keep_the_reference_projection()
+    public void Layer_style_frames_snap_the_center_and_span_the_chord()
     {
-        // Overlays keep the reference placement: a snapped center and a whole-pixel half ramp.
+        // Overlays keep the reference's snapped center and whole-pixel half ramp.
         var gradient = new Gradient { Type = GradientType.Linear, AngleDegrees = 0 };
         var bounds = new PsdRect(0, 0, 10, 4);
         Assert.Equal(0.5f, gradient.Position(bounds, 5, 0, GradientSpan.LayerProjection), 5);
         Assert.Equal(0f, gradient.Position(bounds, 0, 0, GradientSpan.LayerProjection), 5);
         Assert.Equal(0.9f, gradient.Position(bounds, 9, 3, GradientSpan.LayerProjection), 5);
+
+        // At 87 degrees over 600x60 the chord is 60.08 px (half ramp 30); the corner-to-corner
+        // projection would be 89 px. The ramp runs bottom to top across the 60 rows.
+        var steep = new Gradient { Type = GradientType.Linear, AngleDegrees = 87 };
+        var frame = steep.Frame(new GradientBox(0, 0, 600, 60), GradientSpan.LayerProjection);
+        Assert.Equal(0.5f, frame.Position(300, 30), 5);
+        Assert.InRange(frame.Position(300, 0), 0.97f, 1f);
+        Assert.InRange(frame.Position(300, 59), 0f, 0.03f);
+    }
+
+    [Fact]
+    public void Two_stop_overlay_ramps_ease_like_gradient_fills()
+    {
+        // Photoshop eases a two-stop overlay ramp (0.5t + 1.5t^2 - t^3) as it does a fill:
+        // photoshop-overlay-zorder.psd went from max 13 to max 1 (RenderingTests), and the
+        // gradient overlays of psd-tools' stroke-composite.psd from 46% to 4% of their
+        // pixels off by more than 2 levels.
+        var document = PsdDocument.Load(Fixtures.PsdTools("effects/stroke-composite.psd"));
+        var merged = document.Render(new RenderOptions { Source = RenderSource.MergedImage });
+        var layers = document.Render(new RenderOptions { Source = RenderSource.Layers });
+        var overlaid = document.Layers.Where(l => l.Style is { Visible: true } style && style.ActiveEffects.Any(e => e.Kind == PsdLayerEffectKind.GradientOverlay)).ToList();
+        Assert.Equal(2, overlaid.Count);
+        foreach (var layer in overlaid)
+        {
+            var (_, outliers) = Deviation(layers, merged, layer.Bounds, threshold: 2);
+            var area = layer.Bounds.Width * layer.Bounds.Height;
+            Assert.True(outliers <= area * 0.06, $"{layer.Name} {layer.Bounds}: {outliers} of {area} pixels off by more than 2");
+        }
     }
 
     [Fact]
@@ -275,8 +303,8 @@ public sealed class GradientTests
         throw new InvalidOperationException($"No {name} fill at {angle} degrees.");
     }
 
-    /// <summary>Largest channel difference over white, and the pixels off by more than 3, inside <paramref name="region"/>.</summary>
-    private static (int Max, int Outliers) Deviation(RgbaImage a, RgbaImage b, PsdRect region)
+    /// <summary>Largest channel difference over white, and the pixels off by more than <paramref name="threshold"/>, inside <paramref name="region"/>.</summary>
+    private static (int Max, int Outliers) Deviation(RgbaImage a, RgbaImage b, PsdRect region, int threshold = 3)
     {
         var fa = a.Flatten(PsdColor.White);
         var fb = b.Flatten(PsdColor.White);
@@ -290,7 +318,7 @@ public sealed class GradientTests
                 var q = fb.GetPixel(x, y);
                 var delta = Math.Max(Math.Abs(p.R - q.R), Math.Max(Math.Abs(p.G - q.G), Math.Abs(p.B - q.B)));
                 max = Math.Max(max, delta);
-                outliers += delta > 3 ? 1 : 0;
+                outliers += delta > threshold ? 1 : 0;
             }
         }
 

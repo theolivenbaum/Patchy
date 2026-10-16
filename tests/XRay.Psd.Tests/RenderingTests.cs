@@ -67,7 +67,7 @@ public sealed class RenderingTests
     [InlineData("photoshop-group-fx-interior.psd", 1, 0.01)]
     [InlineData("photoshop-group-fx-passthrough.psd", 1, 0.01)]
     [InlineData("photoshop-group-fx-mask-stroke.psd", 30, 0.05)]
-    [InlineData("photoshop-overlay-zorder.psd", 14, 0.8)]
+    [InlineData("photoshop-overlay-zorder.psd", 1, 0.01)]
     [InlineData("photoshop-outer-glow.psd", 72, 0.5)]
     [InlineData("photoshop-inner-glow.psd", 70, 0.25)]
     [InlineData("photoshop-stroke-overprint.psd", 52, 0.1)]

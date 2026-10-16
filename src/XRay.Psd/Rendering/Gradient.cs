@@ -43,7 +43,7 @@ internal enum GradientColorModel
 /// <summary>How Linear/Reflected gradients map bounds onto the ramp (see <c>GradientSpanBasis</c> in the reference blend_math).</summary>
 internal enum GradientSpan
 {
-    /// <summary>Layer-style overlays and strokes: the corner-to-corner projection, with the center and half ramp snapped to whole pixels.</summary>
+    /// <summary>Layer-style overlays and strokes: the center chord, with the center and half ramp snapped to whole pixels.</summary>
     LayerProjection,
 
     /// <summary>Gradient fill layers (<c>GdFl</c>): the center chord, with the gradient line's ends snapped to pixel centers.</summary>
@@ -300,17 +300,22 @@ internal sealed class Gradient
         var sin = MathF.Sin(radians);
         var absCos = MathF.Abs(cos);
         var absSin = MathF.Abs(sin);
+
+        // Both bases span the center chord through the bounds, min(w/|cos|, h/|sin|),
+        // times Scale (reference blend_math.cpp, GradientSpanBasis::CenterChord). The
+        // reference gives layer styles the corner-to-corner projection instead; the two
+        // agree at the axis angles its overlay calibration used, and Photoshop's overlays
+        // follow the chord: psd-tools' layer_effects.psd text runs its 87 degree overlay
+        // over 60 px, its layer height, not the 89 px projection.
+        var chord = MathF.Max(1f, MathF.Min(absCos > 1e-6f ? bounds.Width / absCos : float.PositiveInfinity, absSin > 1e-6f ? bounds.Height / absSin : float.PositiveInfinity));
         if (basis == GradientSpan.LayerProjection)
         {
             // Reference gradient_position: center snapped to a pixel center, whole-pixel half ramp.
-            var span = MathF.Max(1f, (absCos * bounds.Width) + (absSin * bounds.Height));
-            var halfRamp = MathF.Max(1f, MathF.Floor(span * Scale * 0.5f));
+            var halfRamp = MathF.Max(1f, MathF.Floor(chord * Scale * 0.5f));
             return new GradientFrame(Type, Reverse, MathF.Floor(centerX) + 0.5f, MathF.Floor(centerY) + 0.5f, cos, -sin, halfRamp, linearFromCenter: true);
         }
 
-        // Gradient fill layers (GdFl). The ramp spans the center chord through the
-        // bounds, min(w/|cos|, h/|sin|), times Scale (reference blend_math.cpp,
-        // GradientSpanBasis::CenterChord). Photoshop then snaps the gradient line's
+        // Gradient fill layers (GdFl). Photoshop snaps the gradient line's
         // ends to pixel centers: Linear runs from the snapped start of the chord to its
         // snapped end; Radial, Reflected, Diamond and Angle run from the snapped center
         // to the snapped end, and take their direction from those two points, so the
@@ -320,7 +325,6 @@ internal sealed class Gradient
         // gradient-sizes.psd, rgb-blend-modes.psd, masks3.psd and the 4x4 colormodes
         // files, whose 30 degree reflected fill Photoshop draws along the 45 degree
         // diagonal: the snapped center (2.5, 2.5) and end (4.5, 0.5) of the 4x4 canvas.
-        var chord = MathF.Max(1f, MathF.Min(absCos > 1e-6f ? bounds.Width / absCos : float.PositiveInfinity, absSin > 1e-6f ? bounds.Height / absSin : float.PositiveInfinity));
         var halfX = cos * chord * Scale * 0.5f;
         var halfY = -sin * chord * Scale * 0.5f;
         var endX = SnapToPixel(centerX + halfX);
