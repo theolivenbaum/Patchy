@@ -201,8 +201,8 @@ public sealed class PsdLayer
     internal float[]? DecodeChannelPlane(short id, PsdRect rect, int top, int bottom, IO.ChannelReaders? readers)
     {
         var channel = GetChannel(id);
-        var first = Math.Clamp(top - rect.Top, 0, Math.Max(0, rect.Height));
-        var end = Math.Clamp(bottom - rect.Top, first, Math.Max(0, rect.Height));
+        var first = (int)Math.Clamp((long)top - rect.Top, 0, Math.Max(0, rect.Height));
+        var end = (int)Math.Clamp((long)bottom - rect.Top, first, Math.Max(0, rect.Height));
         if (channel is null || rect.IsEmpty || end <= first)
         {
             return null;

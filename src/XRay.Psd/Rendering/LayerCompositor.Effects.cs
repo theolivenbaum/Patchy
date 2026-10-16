@@ -927,7 +927,7 @@ internal sealed partial class LayerCompositor
     /// </summary>
     private void CompositeStyledClipRun(PlanarImage target, PsdLayer layer, PlanarImage source, LayerEffects fx, IReadOnlyList<PsdLayer> members, MaskChain? masks)
     {
-        var content = source.Clone();
+        var content = BandCopy(source);
         foreach (var member in members)
         {
             CompositeLayer(content, member, null, null, clipMode: true);
@@ -954,7 +954,7 @@ internal sealed partial class LayerCompositor
     /// </summary>
     private void CompositeStyledGroup(PlanarImage target, PsdLayer group, LayerEffects fx, MaskChain? masks, PsdBlendMode mode, bool clipMode, MaskSampler? groupMask, PlanarImage? gateBackdrop = null)
     {
-        var bounds = ContentBounds(group).Intersect(target.Bounds);
+        var bounds = ContentBounds(group).Intersect(target.Logical);
         if (bounds.IsEmpty)
         {
             return;
