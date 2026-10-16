@@ -45,6 +45,12 @@ public sealed class RenderOptions
     internal bool RerendersAllText => TextRasterizer is not null && TextRasterMode == TextRasterMode.Always;
 
     /// <summary>
+    /// Renders Color Lookup adjustment layers from their embedded LUT or profile. Off by
+    /// default: no Photoshop capture has measured the result yet (docs/adjustments.md).
+    /// </summary>
+    internal bool RenderColorLookup { get; init; }
+
+    /// <summary>
     /// The most threads a render may use for channel decoding, compositing rows,
     /// mask blurs and color conversion. Defaults to the processor count; 1 renders
     /// on the calling thread only, zero or negative means the processor count.

@@ -6,6 +6,9 @@ namespace XRay.Psd.Rendering;
 /// </summary>
 internal static partial class Adjustments
 {
+    /// <summary>The steepest slope a Levels gamma curve takes at black (see <see cref="LevelsValue"/>).</summary>
+    private const double MaximumLevelsSlope = 3.0;
+
     /// <summary>
     /// <c>levels_value</c>: one record as a real-valued transfer. An identity record
     /// returns its input untouched so a master-only adjustment equals a single stage.
@@ -22,7 +25,14 @@ internal static partial class Adjustments
         var gamma = record.GammaPercent / 100.0;
         var inverseGamma = gamma <= 0.0 ? 1.0 : 1.0 / gamma;
         var normalized = Math.Clamp((value - record.BlackInput) / inputRange, 0.0, 1.0);
-        var leveled = Math.Pow(normalized, inverseGamma);
+        // A brightening gamma has an infinite slope at black; Photoshop's curve leaves black
+        // no steeper than 3 (output range over input range): a straight line of that slope
+        // up to where it meets the power curve. On psd-tools' levels_grayscale.psd (gammas
+        // 1.52 and 1.78) this halves the error (mean 0.46 to 0.26); levels_rgb.psd and
+        // levels_cmyk.psd change by under 0.02, and gammas near 1 keep the plain power curve.
+        var leveled = inverseGamma < 1 && normalized * MaximumLevelsSlope < Math.Pow(normalized, inverseGamma)
+            ? normalized * MaximumLevelsSlope
+            : Math.Pow(normalized, inverseGamma);
         return record.BlackOutput + (leveled * (record.WhiteOutput - record.BlackOutput));
     }
 

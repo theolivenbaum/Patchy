@@ -157,6 +157,12 @@ public sealed class PsdDocument : IDisposable
     internal Imaging.Icc.IccSrgbTransform? ColorTransform =>
         LazyInitializer.EnsureInitialized(ref _colorTransform, () => new(ColorManagementEnabled ? Imaging.Icc.IccSrgbTransform.ForDocument(this) : null)).Value;
 
+    private System.Runtime.CompilerServices.StrongBox<Imaging.Icc.IccInkSpace?>? _inkSpace;
+
+    /// <summary>The cached device-channel space the adjustment layers of CMYK, gray and duotone documents run in (built on first use).</summary>
+    internal Imaging.Icc.IccInkSpace? InkSpace =>
+        LazyInitializer.EnsureInitialized(ref _inkSpace, () => new(Imaging.Icc.IccInkSpace.ForDocument(this))).Value;
+
     private DocumentColors? _colors;
 
     /// <summary>Converts descriptor, text and pattern colors the same way as the pixels (see <see cref="DocumentColors"/>).</summary>

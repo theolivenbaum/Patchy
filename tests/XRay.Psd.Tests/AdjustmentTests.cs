@@ -376,6 +376,110 @@ public sealed class AdjustmentTests
         Assert.Equal(150, Adjustments.ThresholdLuminance(0, 255, 0));
     }
 
+    [Fact]
+    public void Threshold_rounds_its_luma_and_16_bit_posterize_keeps_16_bit_steps()
+    {
+        // psd-tools' threshold_rgb.psd: the rounded luma misses 1 of 34,000 pixels, the
+        // reference's truncated one 85.
+        Assert.Equal(77, Adjustments.ThresholdLevel(255, 0, 0));
+        Assert.Equal(150, Adjustments.ThresholdLevel(0, 255, 0));
+        Assert.Equal(128, Adjustments.ThresholdLevel(128, 128, 128));
+
+        // Three 16-bit levels are 0, 16384 and 32768: the middle step is 128 in 8 bits.
+        Assert.Equal(0.5f, Adjustments.Posterize16Value(0.4f, 3));
+        Assert.Equal(0f, Adjustments.Posterize16Value(0.33f, 3));
+        Assert.Equal(1f, Adjustments.Posterize16Value(0.67f, 3));
+        Assert.Equal(1f, Adjustments.Posterize16Value(1f, 21));
+        Assert.Equal(MathF.Floor(32768f / 20f) / 32768f, Adjustments.Posterize16Value(0.06f, 21));
+    }
+
+    [Fact]
+    public void Levels_gamma_leaves_black_no_steeper_than_three()
+    {
+        // Gamma 2: the power curve would give 255 * sqrt(8/255) = 45 at 8; the line of slope
+        // 3 meets the curve at 1/9 of the range.
+        var brighten = LevelsSettings.Identity with { Master = new LevelsRecord(0, 255, 200, 0, 255) };
+        var lut = Adjustments.BuildLevelsLut(brighten).Red;
+        Assert.Equal(24, lut[8]);
+        Assert.Equal(84, lut[28]);
+        Assert.Equal(90, lut[32]);                      // the power curve above it
+        var gentle = LevelsSettings.Identity with { Master = new LevelsRecord(0, 255, 110, 0, 255) };
+        Assert.Equal(Math.Round(255 * Math.Pow(1 / 255.0, 1 / 1.1)), Adjustments.BuildLevelsLut(gentle).Red[1]);
+        var darken = LevelsSettings.Identity with { Master = new LevelsRecord(0, 255, 50, 0, 255) };
+        Assert.Equal(0, Adjustments.BuildLevelsLut(darken).Red[8]); // gammas below 1 keep the power curve
+    }
+
+    // ---- Adjustments on the document's channels -----------------------------------
+
+    /// <summary>
+    /// psd-tools' adjustment files (Photoshop renders in their merged images): CMYK and
+    /// gray documents run the channel-wise kinds on their own channels. Bounds are the
+    /// measured error; on RGB math the same files were levels_cmyk max 140 mean 18.6,
+    /// levels_grayscale max 70 mean 8.6, exposure_grayscale max 20 mean 1.5,
+    /// threshold_rgb max 255 mean 0.61 and posterize_16bits_rgb max 128 mean 0.89.
+    /// </summary>
+    [Theory]
+    [InlineData("adjustments/levels_cmyk.psd", 63, 0.55)]
+    [InlineData("adjustments/levels_grayscale.psd", 13, 0.28)]
+    [InlineData("adjustments/exposure_grayscale.psd", 5, 0.02)]
+    [InlineData("adjustments/threshold_rgb.psd", 255, 0.02)]
+    [InlineData("adjustments/posterize_16bits_rgb.psd", 0, 0.0)]
+    public void Psd_tools_adjustment_files_match_photoshop(string path, int maxDelta, double meanDelta)
+    {
+        var document = PsdDocument.Load(Fixtures.PsdTools(path));
+        var rendered = document.Render(new RenderOptions { Source = RenderSource.Layers });
+
+        var diff = ImageTools.Compare(rendered, document.GetMergedImage());
+
+        Assert.True(diff.MaxDelta <= maxDelta && diff.MeanDelta <= meanDelta, $"{path}: {diff}");
+    }
+
+    [Fact]
+    public void Cmyk_levels_and_curves_keep_the_black_ink_record()
+    {
+        var document = PsdDocument.Load(Fixtures.PsdTools("adjustments/levels_cmyk.psd"));
+        var layer = document.EnumerateLayersTopDown().Single(l => l.Name == "Levels 1");
+        var levels = Adjustments.ParseLevels(layer.GetTaggedBlock("levl")!.Data.Span)!;
+        Assert.Equal(new LevelsRecord(39, 255, 47, 56, 255), levels.BlackInk);
+        var tables = Adjustments.InkTables(layer, "levl", layer.GetTaggedBlock("levl")!.Data.Span)!;
+        Assert.Equal(4, tables.Length);
+        Assert.Equal(Adjustments.BuildLevelsLut(levels with { Red = levels.BlackInk }).Red, tables[3]);
+        Assert.NotEqual(tables[0], tables[3]);
+
+        // A version-4 ACV with five curves: composite, cyan, magenta, yellow, black.
+        var acv = new PsdBuilder.Writer();
+        acv.U16(4);
+        acv.U16(5);
+        for (var curve = 0; curve < 5; curve++)
+        {
+            acv.U16(2);
+            acv.U16(curve == 4 ? (ushort)200 : (ushort)0);
+            acv.U16(0);
+            acv.U16(255);
+            acv.U16(255);
+        }
+
+        var curves = Adjustments.ReadAcv(acv.ToArray());
+        Assert.Equal([new CurvePoint(0, 200), new CurvePoint(255, 255)], curves.BlackInk);
+        Assert.Equal(CurvesSettings.IdentityPoints, curves.Red);
+    }
+
+    [Fact]
+    public void Gray_exposure_runs_in_the_gray_profile_s_linear_light()
+    {
+        var document = PsdDocument.Load(Fixtures.PsdTools("adjustments/exposure_grayscale.psd"));
+        var space = document.InkSpace!;
+        Assert.Equal(1, space.Channels);
+
+        var identity = Adjustments.GrayExposureTable(new ExposureSettings(0, 0, 100), space);
+        Assert.Equal(Enumerable.Range(0, 256).Select(v => (byte)v), identity);
+
+        // One stop up doubles the luminance the Dot Gain 20% profile gives each level.
+        var stop = Adjustments.GrayExposureTable(new ExposureSettings(100, 0, 100), space);
+        Assert.Equal(space.LevelFromLuminance(2 * space.LevelLuminance(64)), stop[64]);
+        Assert.Equal(255, stop[200]);
+    }
+
     // ---- Exposure ---------------------------------------------------------------------
 
     [Theory]

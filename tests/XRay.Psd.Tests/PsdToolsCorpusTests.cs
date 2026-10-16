@@ -226,4 +226,86 @@ public sealed class PsdToolsCorpusTests
         Assert.Equal(new PsdRect(133, 70, 201, 138), user[0].Bounds);
         Assert.Equal(("http://example.com", "target", "message", "alt_tag"), (user[0].Url, user[0].Target, user[0].Message, user[0].AltTag));
     }
+
+    // ---- The full psd-tools collection (local only) ---------------------------------
+
+    /// <summary>
+    /// Mean error of the layer compositor against Photoshop's merged image for every file in
+    /// psd-tools' <c>adjustments/</c> folder, measured when the CMYK and gray ink spaces, the
+    /// Levels toe and the Threshold and 16-bit Posterize rules went in (docs/adjustments.md),
+    /// plus 0.02. Most of these files are too large to commit; the test runs when the
+    /// collection is checked out under <c>local-test-fixtures/psd-tools/tests/psd_files</c>
+    /// (docs/testing.md) and skips otherwise.
+    /// </summary>
+    public static TheoryData<string, double> AdjustmentCorpus() => new()
+    {
+        { "adjustment_backdrop_test.psd", 0.02 },
+        { "adjustment_clipping.psd", 0.02 },
+        { "adjustment_nested_composition_1.psd", 0.33 },
+        { "adjustment_nested_composition_2.psd", 0.09 },
+        { "adjustment_nested_composition_3.psd", 0.11 },
+        { "adjustment_nested_composition_4.psd", 0.07 },
+        { "adjustment_nested_composition_5.psd", 0.15 },
+        { "brightnesscontrast_cmyk.psd", 0.59 },
+        { "brightnesscontrast_grayscale.psd", 0.05 },
+        { "brightnesscontrast_legacy_cmyk.psd", 0.16 },
+        { "brightnesscontrast_legacy_grayscale.psd", 0.15 },
+        { "brightnesscontrast_legacy_rgb.psd", 0.20 },
+        { "brightnesscontrast_rgb.psd", 0.02 },
+        { "curves_cmyk.psd", 0.85 },
+        { "curves_grayscale.psd", 0.06 },
+        { "curves_rgb.psd", 0.03 },
+        { "exposure_grayscale.psd", 0.03 },
+        { "exposure_rgb.psd", 0.03 },
+        { "huesaturation_colorize_rgb.psd", 0.02 },
+        { "huesaturation_lightness_rgb.psd", 0.12 },
+        { "huesaturation_rgb.psd", 0.47 },
+        { "huesaturation_saturation_rgb.psd", 0.41 },
+        { "invert_cmyk.psd", 0.26 },
+        { "invert_grayscale.psd", 0.05 },
+        { "invert_rgb.psd", 0.02 },
+        { "levels_cmyk.psd", 0.54 },
+        { "levels_grayscale.psd", 0.28 },
+        { "levels_rgb.psd", 0.33 },
+        { "posterize_16bits_cmyk.psd", 0.60 },
+        { "posterize_16bits_grayscale.psd", 0.08 },
+        { "posterize_16bits_rgb.psd", 0.02 },
+        { "posterize_cmyk.psd", 0.48 },
+        { "posterize_grayscale.psd", 0.06 },
+        { "posterize_rgb.psd", 0.02 },
+        { "threshold_16bits_grayscale.psd", 0.03 },
+        { "threshold_16bits_rgb.psd", 0.02 },
+        { "threshold_cmyk.psd", 0.34 },
+        { "threshold_grayscale.psd", 0.06 },
+        { "threshold_rgb.psd", 0.03 },
+    };
+
+    [Theory]
+    [MemberData(nameof(AdjustmentCorpus))]
+    public void Psd_tools_adjustment_collection_matches_photoshop_if_available(string name, double meanDelta)
+    {
+        var path = LocalCorpus("adjustments", name);
+        Assert.SkipWhen(path is null, "Check out the psd-tools collection under local-test-fixtures/psd-tools to run this test.");
+        var document = PsdDocument.Load(path!);
+        var rendered = document.Render(new RenderOptions { Source = RenderSource.Layers });
+
+        var diff = ImageTools.Compare(rendered, document.GetMergedImage());
+
+        Assert.True(diff.MeanDelta <= meanDelta, $"{name}: {diff}");
+    }
+
+    /// <summary>A file of the full psd-tools collection in a <c>local-test-fixtures</c> folder at or above the repository, or null.</summary>
+    private static string? LocalCorpus(params string[] relative)
+    {
+        for (var directory = new DirectoryInfo(Fixtures.RootDirectory); directory is not null; directory = directory.Parent)
+        {
+            var candidate = Path.Combine([directory.FullName, "local-test-fixtures", "psd-tools", "tests", "psd_files", .. relative]);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
 }

@@ -35,6 +35,9 @@ internal readonly record struct LevelsRecord(int BlackInput = 0, int WhiteInput 
 /// <summary>Composite (master) and per-channel Levels records.</summary>
 internal sealed record LevelsSettings(LevelsRecord Master, LevelsRecord Red, LevelsRecord Green, LevelsRecord Blue)
 {
+    /// <summary>A CMYK document's black ink record (the fifth); only the ink-space path reads it.</summary>
+    public LevelsRecord BlackInk { get; init; } = LevelsRecord.Identity;
+
     public static LevelsSettings Identity => new(LevelsRecord.Identity, LevelsRecord.Identity, LevelsRecord.Identity, LevelsRecord.Identity);
 }
 
@@ -44,6 +47,9 @@ internal readonly record struct CurvePoint(int Input, int Output);
 /// <summary>Composite and per-channel Curves control points (<c>CurvesAdjustment</c>).</summary>
 internal sealed record CurvesSettings(CurvePoint[] Rgb, CurvePoint[] Red, CurvePoint[] Green, CurvePoint[] Blue)
 {
+    /// <summary>A CMYK document's black ink curve (curve index 4); only the ink-space path reads it.</summary>
+    public CurvePoint[] BlackInk { get; init; } = IdentityPoints;
+
     public static CurvePoint[] IdentityPoints => [new(0, 0), new(255, 255)];
 
     public static CurvesSettings Identity => new(IdentityPoints, IdentityPoints, IdentityPoints, IdentityPoints);
@@ -118,7 +124,7 @@ internal static partial class Adjustments
     /// <summary>
     /// <c>levl</c>: u16 version 2, then 29 records of five u16 (black in, white in, black
     /// out, white out, gamma percent). Records 0..3 are composite, red, green, blue; record
-    /// 4 is a CMYK document's black ink, which the RGB math never reads.
+    /// 4 is a CMYK document's black ink, which only the ink-space path reads.
     /// </summary>
     internal static LevelsSettings? ParseLevels(ReadOnlySpan<byte> data)
     {
@@ -128,7 +134,7 @@ internal static partial class Adjustments
             return null;
         }
 
-        var records = new LevelsRecord[4];
+        var records = new LevelsRecord[5];
         for (var i = 0; i < records.Length; i++)
         {
             var blackInput = reader.ReadUInt16();
@@ -139,7 +145,7 @@ internal static partial class Adjustments
             records[i] = new LevelsRecord(blackInput, whiteInput, gamma, blackOutput, whiteOutput).Clamped();
         }
 
-        return new LevelsSettings(records[0], records[1], records[2], records[3]);
+        return new LevelsSettings(records[0], records[1], records[2], records[3]) { BlackInk = records[4] };
     }
 
     /// <summary><c>curv</c>: one zero byte, then the ACV body (<see cref="ReadAcv"/>).</summary>
