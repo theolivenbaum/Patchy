@@ -39,6 +39,7 @@ Read this file before any task. Keep it current and under 20,000 bytes; put deta
 | `tests/fixtures/ag-psd/` | ag-psd's Photoshop type-on-a-path file (MIT, see `NOTICE` and its `LICENSE`) |
 | `docs/porting-map.md` | Which reference files each C# area came from, and what was deliberately left out |
 | `docs/rendering.md` | Compositor model, effect pipeline, calibration status |
+| `docs/gradients.md` | Gradient placement and evaluation: line snapping, bounds, span, easing, document-space mixing, dither |
 | `docs/adjustments.md` | Adjustment layers: payload layouts, models, accuracy against Photoshop, CMYK and gray documents, Color Lookup, noise gradients |
 | `docs/text.md` | Text model: TySh, `Txt2`, PS 5 `tySh`, gap filling and extraction |
 | `docs/text-rendering.md` | Type-layer re-rendering: core hook, font resolution, Photoshop layout model, validation metrics |
