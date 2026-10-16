@@ -21,6 +21,12 @@ internal sealed class DocumentColors
 
     public DocumentColors(PsdDocument document) => _document = document;
 
+    /// <summary>The document's color mode.</summary>
+    public PsdColorMode ColorMode => _document.ColorMode;
+
+    /// <summary>The document's bits per channel.</summary>
+    public int Depth => _document.Depth;
+
     /// <summary>The parsed duotone specification of a duotone document, or null (parsed on first use).</summary>
     public Duotone? Duotone => LazyInitializer.EnsureInitialized(
         ref _duotone,

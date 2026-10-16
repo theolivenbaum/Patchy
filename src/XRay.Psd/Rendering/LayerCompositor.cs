@@ -494,8 +494,9 @@ internal sealed partial class LayerCompositor
 
     /// <summary>
     /// Gradient fill layers span the center chord of their shape's bounds when
-    /// aligned (the canvas otherwise), with Photoshop's eased two-stop ramp
-    /// (reference <c>vector_raster.cpp</c>, GdFl branch). The vector mask shapes it later.
+    /// aligned (the canvas otherwise), with Photoshop's eased two-stop ramp and
+    /// dither (reference <c>vector_raster.cpp</c>, GdFl branch, <c>gradient_color_dithered</c>).
+    /// The vector mask shapes it later.
     /// </summary>
     private PlanarImage? GradientFillPixels(PsdLayer layer, Descriptors.Descriptor descriptor)
     {
@@ -505,15 +506,21 @@ internal sealed partial class LayerCompositor
             return null;
         }
 
-        var shape = layer.VectorMask is { Subpaths.Count: > 0 } path ? path.Bounds.Intersect(_canvas) : _canvas;
-        var placement = gradient.AlignWithLayer && !shape.IsEmpty ? shape : _canvas;
+        var placement = gradient.AlignWithLayer && (PathGradientBounds(layer.VectorMask) ?? MaskGradientBounds(layer.Mask)) is { } shape ? shape : GradientBox.From(_canvas);
+        var frame = gradient.Frame(placement, GradientSpan.CenterChord);
+        var dither = descriptor.GetBoolean("Dthr");
         var pixels = new PlanarImage(_canvas);
         for (var y = _canvas.Top; y < _canvas.Bottom; y++)
         {
             for (var x = _canvas.Left; x < _canvas.Right; x++)
             {
-                var position = gradient.Position(placement, x, y, GradientSpan.CenterChord);
+                var position = frame.Position(x, y);
                 var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
+                if (dither)
+                {
+                    (r, g, b) = DitherGradientColor(r, g, b, x, y);
+                }
+
                 var i = pixels.RowOffset(y, x);
                 pixels.R[i] = r;
                 pixels.G[i] = g;
@@ -523,6 +530,53 @@ internal sealed partial class LayerCompositor
         }
 
         return pixels;
+    }
+
+    /// <summary>
+    /// The bounds an aligned gradient fill spans: its path's exact bounds (anchors and
+    /// control points, clipped to the canvas); null without a path. Photoshop measures
+    /// the path itself, not its pixel hull: a 64 px rectangle spans 64 px although its
+    /// edge is stored as 63.99999 (psd-tools' gradient-sizes.psd).
+    /// </summary>
+    private GradientBox? PathGradientBounds(Layers.VectorPath? path)
+    {
+        if (path is not { Subpaths.Count: > 0 })
+        {
+            return null;
+        }
+
+        double left = double.MaxValue, top = double.MaxValue, right = double.MinValue, bottom = double.MinValue;
+        foreach (var subpath in path.Subpaths)
+        {
+            foreach (var k in subpath.Knots)
+            {
+                left = Math.Min(left, Math.Min(k.X, Math.Min(k.InX, k.OutX)));
+                top = Math.Min(top, Math.Min(k.Y, Math.Min(k.InY, k.OutY)));
+                right = Math.Max(right, Math.Max(k.X, Math.Max(k.InX, k.OutX)));
+                bottom = Math.Max(bottom, Math.Max(k.Y, Math.Max(k.InY, k.OutY)));
+            }
+        }
+
+        left = Math.Max(left, _canvas.Left);
+        top = Math.Max(top, _canvas.Top);
+        right = Math.Min(right, _canvas.Right);
+        bottom = Math.Min(bottom, _canvas.Bottom);
+        return right > left && bottom > top ? new GradientBox((float)left, (float)top, (float)(right - left), (float)(bottom - top)) : null;
+    }
+
+    /// <summary>
+    /// Without a path, an aligned gradient fill spans its raster mask's rectangle when the
+    /// mask hides everything outside it (default color 0): psd-tools' 32-bit
+    /// gradient-fill.psd runs its 90 degree ramp over the mask's 94 rows, not the canvas's 150.
+    /// </summary>
+    private GradientBox? MaskGradientBounds(LayerMask? mask)
+    {
+        if (mask is not { Disabled: false, DefaultColor: 0 } || mask.Bounds.Intersect(_canvas) is not { IsEmpty: false } bounds)
+        {
+            return null;
+        }
+
+        return GradientBox.From(bounds);
     }
 
     /// <summary>Pattern fill layers tile their pattern over the canvas; the vector mask shapes it later.</summary>

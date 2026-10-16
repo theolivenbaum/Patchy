@@ -67,7 +67,7 @@ internal sealed partial class LayerCompositor
         var domain = new PsdRect(_canvas.Left - margin, _canvas.Top - margin, _canvas.Right + margin, _canvas.Bottom + margin);
         var image = new PlanarImage(domain);
         var width = domain.Width;
-        var shapeBounds = path.Subpaths.Count > 0 ? path.Bounds.Intersect(_canvas) : _canvas;
+        var shapeBounds = PathGradientBounds(path);
 
         // Density shows the fill everywhere at (255 - density) / 255, the vector-mask rule.
         float[]? fillCoverage = null;
@@ -171,7 +171,7 @@ internal sealed partial class LayerCompositor
         }
 
         // Aligned gradients span the stroke's own painted bounds.
-        if (PaintContent(layer, paint.Key, paint.Content, painted, painted) is not { } content)
+        if (PaintContent(layer, paint.Key, paint.Content, painted, painted.IsEmpty ? null : GradientBox.From(painted)) is not { } content)
         {
             return null;
         }
@@ -242,9 +242,11 @@ internal sealed partial class LayerCompositor
 
     /// <summary>
     /// Paints fill-layer content (<c>SoCo</c> solid, <c>GdFl</c> gradient, <c>PtFl</c> pattern)
-    /// over <paramref name="rect"/>. Aligned gradients span <paramref name="alignBounds"/>.
+    /// over <paramref name="rect"/>. Aligned gradients span <paramref name="alignBounds"/>
+    /// (the canvas when null) and dither when <c>Dthr</c> is set (reference
+    /// <c>paint_coverage</c>, <c>gradient_color_dithered</c>).
     /// </summary>
-    private PlanarImage? PaintContent(PsdLayer layer, string? key, Descriptor? descriptor, PsdRect rect, PsdRect alignBounds)
+    private PlanarImage? PaintContent(PsdLayer layer, string? key, Descriptor? descriptor, PsdRect rect, GradientBox? alignBounds)
     {
         if (descriptor is null || rect.IsEmpty)
         {
@@ -272,13 +274,20 @@ internal sealed partial class LayerCompositor
                         return null;
                     }
 
-                    var placement = gradient.AlignWithLayer && !alignBounds.IsEmpty ? alignBounds : _canvas;
+                    var placement = gradient.AlignWithLayer && alignBounds is { } aligned ? aligned : GradientBox.From(_canvas);
+                    var frame = gradient.Frame(placement, GradientSpan.CenterChord);
+                    var dither = descriptor.GetBoolean("Dthr");
                     for (var y = rect.Top; y < rect.Bottom; y++)
                     {
                         for (var x = rect.Left; x < rect.Right; x++)
                         {
-                            var position = gradient.Position(placement, x, y, GradientSpan.CenterChord);
+                            var position = frame.Position(x, y);
                             var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
+                            if (dither)
+                            {
+                                (r, g, b) = DitherGradientColor(r, g, b, x, y);
+                            }
+
                             var i = pixels.RowOffset(y, x);
                             pixels.R[i] = r;
                             pixels.G[i] = g;

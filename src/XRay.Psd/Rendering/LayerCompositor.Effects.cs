@@ -764,18 +764,20 @@ internal sealed partial class LayerCompositor
     {
         if (overlay.Gradient is { } gradient)
         {
-            var placement = gradient.AlignWithLayer ? MatteBounds(styled) : styled.Source.Bounds;
+            // Two-stop ramps ease like gradient fills (endpoint smoothing): Photoshop's
+            // photoshop-overlay-zorder.psd overlays go from max 13 to max 1 with it.
+            var frame = gradient.Frame(GradientBox.From(gradient.AlignWithLayer ? MatteBounds(styled) : styled.Source.Bounds), GradientSpan.LayerProjection);
             var dither = overlay.Dither;
             return (x, y) =>
             {
-                var position = gradient.Position(placement, x, y, GradientSpan.LayerProjection);
-                var (r, g, b) = gradient.Color(position, endpointSmoothing: false);
+                var position = frame.Position(x, y);
+                var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
                 if (dither)
                 {
                     (r, g, b) = DitherGradientColor(r, g, b, x, y);
                 }
 
-                return (r, g, b, gradient.Opacity(position, endpointSmoothing: false));
+                return (r, g, b, gradient.Opacity(position, endpointSmoothing: true));
             };
         }
 
@@ -845,17 +847,17 @@ internal sealed partial class LayerCompositor
             };
         }
 
-        var bounds = gradient.AlignWithLayer ? MatteBounds(styled) : styled.Source.Bounds;
+        var frame = gradient.Frame(GradientBox.From(gradient.AlignWithLayer ? MatteBounds(styled) : styled.Source.Bounds), GradientSpan.LayerProjection);
         return (x, y) =>
         {
-            var position = gradient.Position(bounds, x, y, GradientSpan.LayerProjection);
-            var (r, g, b) = gradient.Color(position, endpointSmoothing: false);
+            var position = frame.Position(x, y);
+            var (r, g, b) = gradient.Color(position, endpointSmoothing: true);
             if (stroke.Dither)
             {
                 (r, g, b) = DitherGradientColor(r, g, b, x, y);
             }
 
-            return (r, g, b, gradient.Opacity(position, endpointSmoothing: false));
+            return (r, g, b, gradient.Opacity(position, endpointSmoothing: true));
         };
     }
 
