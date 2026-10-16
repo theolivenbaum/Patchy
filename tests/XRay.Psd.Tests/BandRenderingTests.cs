@@ -76,6 +76,94 @@ public sealed class BandRenderingTests
         Assert.Equal(whole.Pixels, PngDecoder.Decode(sequential).Pixels);
     }
 
+    [Theory]
+    [MemberData(nameof(AllFixtures))]
+    public void Truncated_fixtures_band_like_the_whole_render(string name)
+    {
+        var bytes = File.ReadAllBytes(Fixtures.PathOf(name));
+        foreach (var fraction in new[] { 0.3, 0.7, 0.95 })
+        {
+            var cut = bytes.AsMemory(0, (int)(bytes.Length * fraction));
+            PsdDocument document;
+            try
+            {
+                document = PsdDocument.Load(cut);
+            }
+            catch (PsdFormatException)
+            {
+                continue;
+            }
+
+            foreach (var source in new[] { RenderSource.Layers, RenderSource.MergedImage })
+            {
+                RgbaImage? whole = null;
+                try
+                {
+                    whole = document.Render(new RenderOptions { Source = source });
+                }
+                catch (PsdFormatException)
+                {
+                    // A damaged file may be rejected; the band path must then fail the same way or degrade.
+                }
+
+                try
+                {
+                    var banded = Assemble(document, new RenderOptions { Source = source, BandHeight = 17 });
+                    if (whole is not null)
+                    {
+                        Assert.True(whole.Pixels.AsSpan().SequenceEqual(banded.Pixels), $"{source} at {fraction}: first difference at pixel {FirstDifference(whole, banded)}");
+                    }
+
+                    using var png = new MemoryStream();
+                    document.RenderToPng(png, new RenderOptions { Source = source, BandHeight = 17 });
+                }
+                catch (PsdFormatException)
+                {
+                    Assert.Null(whole);
+                }
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(MutationFuzzTests.SmallFixtures), MemberType = typeof(MutationFuzzTests))]
+    public void Mutated_fixtures_band_without_other_exceptions(string name)
+    {
+        var original = File.ReadAllBytes(Fixtures.PathOf(name));
+        var regions = MutationFuzzTests.StructuredRegions(original);
+        for (var i = 0; i < 4; i++)
+        {
+            var (bytes, description) = MutationFuzzTests.Mutate(original, 0xBA4D0000UL + ((ulong)name.Length * 31) + (ulong)i, regions);
+            try
+            {
+                var document = PsdDocument.Load(bytes);
+                if ((long)document.Width * document.Height > Math.Max(1L << 20, original.Length * 4L))
+                {
+                    continue;
+                }
+
+                foreach (var source in new[] { RenderSource.Layers, RenderSource.Auto })
+                {
+                    foreach (var band in document.RenderBands(new RenderOptions { Source = source, BandHeight = 23 }))
+                    {
+                        Assert.Equal(document.Width, band.Image.Width);
+                    }
+                }
+
+                using var png = new MemoryStream();
+                document.RenderToPng(png, new RenderOptions { BandHeight = 23 });
+            }
+            catch (PsdFormatException)
+            {
+                // Rejecting damaged input is the expected outcome.
+            }
+            catch (Exception ex) when (ex is not Xunit.Sdk.XunitException)
+            {
+                Assert.Fail($"{name} ({description}): {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+    }
+
     [Fact]
     public void Bands_are_identical_at_every_degree()
     {
