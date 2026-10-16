@@ -138,7 +138,9 @@ public static partial class PngEncoder
             }
 
             var count = Math.Min(available, _segmentCount - _nextSegment - (final ? 0 : 1));
-            if (count <= 0)
+
+            // Segments deflate in parallel, so wait for a batch of them; the bytes do not depend on it.
+            if (count <= 0 || (!final && count < Parallelism.MaxDegree))
             {
                 return;
             }
